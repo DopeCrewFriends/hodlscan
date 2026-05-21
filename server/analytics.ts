@@ -1,4 +1,11 @@
-import type { AggregatedHolder, SnapshotHolderRow, SnapshotRow } from './types.js';
+import type {
+  AggregatedHolder,
+  DashboardMetrics,
+  DistributionBucket,
+  SnapshotHolderRow,
+  SnapshotMetricsRow,
+  SnapshotRow,
+} from './types.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DIAMOND_HANDS_DAYS = 90;
@@ -49,7 +56,7 @@ export function aggregateHolders(
     .map((holder, index) => ({ ...holder, rank: index + 1 }));
 }
 
-export function buildDistribution(holders: SnapshotHolderRow[]) {
+export function buildDistribution(holders: SnapshotHolderRow[]): DistributionBucket[] {
   const buckets = [
     { label: 'Top 10', to: 10 },
     { label: 'Top 50', to: 50 },
@@ -88,10 +95,58 @@ export function buildDistribution(holders: SnapshotHolderRow[]) {
   });
 }
 
+function getHolderAgeDays(holder: SnapshotHolderRow, now: number) {
+  const since =
+    holder.historical_holding_since_at || holder.current_streak_started_at;
+  return since ? (now - new Date(since).getTime()) / DAY_MS : 0;
+}
+
+export function buildDashboardMetrics(
+  snapshot: SnapshotRow,
+  holders: SnapshotHolderRow[],
+): DashboardMetrics {
+  const now = Date.now();
+  const knownHistoricalAges = holders
+    .map((holder) => {
+      const since = holder.historical_holding_since_at;
+      return since ? now - new Date(since).getTime() : 0;
+    })
+    .filter((age) => age > 0);
+  const allHolderAges = holders
+    .map((holder) => getHolderAgeDays(holder, now))
+    .filter((age) => age > 0);
+  const averageHolderAgeDays =
+    knownHistoricalAges.length > 0
+      ? knownHistoricalAges.reduce((sum, age) => sum + age, 0) /
+        knownHistoricalAges.length /
+        DAY_MS
+      : 0;
+  const oldestHolderAgeDays =
+    allHolderAges.length > 0 ? Math.max(...allHolderAges) / DAY_MS : 0;
+  const diamondHandsPct = holders
+    .filter((holder) => getHolderAgeDays(holder, now) >= DIAMOND_HANDS_DAYS)
+    .reduce((sum, holder) => sum + holder.pct_supply, 0);
+
+  return {
+    top10Pct: holders
+      .filter((holder) => holder.rank <= 10)
+      .reduce((sum, holder) => sum + holder.pct_supply, 0),
+    top20Pct: holders
+      .filter((holder) => holder.rank <= 20)
+      .reduce((sum, holder) => sum + holder.pct_supply, 0),
+    averageHolderAgeDays,
+    oldestHolderAgeDays,
+    diamondHandsPct,
+    holderCount: snapshot.holder_count,
+    newHolderCount: snapshot.new_holder_count,
+    droppedHolderCount: snapshot.dropped_holder_count,
+  };
+}
+
 export function buildSnapshotResponse(
   snapshot: SnapshotRow | null,
   holders: SnapshotHolderRow[],
-  metricHolders = holders,
+  snapshotMetrics?: SnapshotMetricsRow | null,
 ) {
   if (!snapshot) {
     return {
@@ -103,59 +158,19 @@ export function buildSnapshotResponse(
   }
 
   const now = Date.now();
-  const knownHistoricalAges = metricHolders
-    .map((holder) => {
-      const since = holder.historical_holding_since_at;
-      return since ? now - new Date(since).getTime() : 0;
-    })
-    .filter((age) => age > 0);
-  const allHolderAges = metricHolders
-    .map((holder) => {
-      const since =
-        holder.historical_holding_since_at || holder.current_streak_started_at;
-      return since ? now - new Date(since).getTime() : 0;
-    })
-    .filter((age) => age > 0);
-  const averageHolderAgeDays =
-    knownHistoricalAges.length > 0
-      ? knownHistoricalAges.reduce((sum, age) => sum + age, 0) /
-        knownHistoricalAges.length /
-        DAY_MS
-      : 0;
-  const oldestHolderAgeDays =
-    allHolderAges.length > 0 ? Math.max(...allHolderAges) / DAY_MS : 0;
-  const getHolderAgeDays = (holder: SnapshotHolderRow) => {
-    const since =
-      holder.historical_holding_since_at || holder.current_streak_started_at;
-    return since ? (now - new Date(since).getTime()) / DAY_MS : 0;
-  };
-  const diamondHandsPct = metricHolders
-    .filter((holder) => getHolderAgeDays(holder) >= DIAMOND_HANDS_DAYS)
-    .reduce((sum, holder) => sum + holder.pct_supply, 0);
+  const metrics = snapshotMetrics?.metrics || buildDashboardMetrics(snapshot, holders);
+  const distribution = snapshotMetrics?.distribution || buildDistribution(holders);
 
   return {
     snapshot,
     holders: holders.map((holder) => ({
       ...holder,
-      current_holder_age_days: getHolderAgeDays(holder),
+      current_holder_age_days: getHolderAgeDays(holder, now),
       holding_time_source: holder.historical_holding_since_at
         ? holder.historical_holding_source || 'historical'
         : 'hodlscan_snapshot',
     })),
-    metrics: {
-      top10Pct: holders
-        .filter((holder) => holder.rank <= 10)
-        .reduce((sum, holder) => sum + holder.pct_supply, 0),
-      top20Pct: holders
-        .filter((holder) => holder.rank <= 20)
-        .reduce((sum, holder) => sum + holder.pct_supply, 0),
-      averageHolderAgeDays,
-      oldestHolderAgeDays,
-      diamondHandsPct,
-      holderCount: snapshot.holder_count,
-      newHolderCount: snapshot.new_holder_count,
-      droppedHolderCount: snapshot.dropped_holder_count,
-    },
-    distribution: buildDistribution(holders),
+    metrics,
+    distribution,
   };
 }

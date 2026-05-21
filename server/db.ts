@@ -4,8 +4,11 @@ import WebSocket from 'ws';
 import { config } from './config.js';
 import type {
   AggregatedHolder,
+  DashboardMetrics,
+  DistributionBucket,
   HistoryRow,
   SnapshotHolderRow,
+  SnapshotMetricsRow,
   SnapshotRow,
 } from './types.js';
 
@@ -338,6 +341,47 @@ export async function getAllSnapshotHolders(
   return hydrateSnapshotHolders(holders);
 }
 
+export async function saveSnapshotMetrics({
+  snapshotId,
+  metrics,
+  distribution,
+}: {
+  snapshotId: number;
+  metrics: DashboardMetrics;
+  distribution: DistributionBucket[];
+}) {
+  const { error } = await getSupabase()
+    .from('snapshot_metrics')
+    .upsert(
+      {
+        snapshot_id: snapshotId,
+        metrics,
+        distribution,
+      },
+      { onConflict: 'snapshot_id' },
+    );
+
+  if (error) {
+    throw new Error(error.message);
+  }
+}
+
+export async function getSnapshotMetrics(
+  snapshotId: number,
+): Promise<SnapshotMetricsRow | null> {
+  const { data, error } = await getSupabase()
+    .from('snapshot_metrics')
+    .select('*')
+    .eq('snapshot_id', snapshotId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return (data as SnapshotMetricsRow | null) || null;
+}
+
 export async function getHistoricalHoldingCache(
   owners: string[],
 ): Promise<Map<string, { sinceAt: string | null; source: string | null }>> {
@@ -372,54 +416,33 @@ export async function getHistory(): Promise<HistoryRow[]> {
   }
 
   const snapshotIds = snapshots.map((snapshot) => snapshot.id);
-  const holderRows: Array<{
-    snapshot_id: number;
-    rank: number;
-    pct_supply: number;
-  }> = [];
-
+  const metricRows: SnapshotMetricsRow[] = [];
   for (const idChunk of chunk(snapshotIds, READ_IN_CHUNK_SIZE)) {
-    const rows = await fetchAll<{
-      snapshot_id: number;
-      rank: number;
-      pct_supply: number;
-    }>((from, to) =>
-      getSupabase()
-        .from('snapshot_holders')
-        .select('snapshot_id, rank, pct_supply')
-        .in('snapshot_id', idChunk)
-        .lte('rank', 20)
-        .range(from, to),
-    );
-    holderRows.push(...rows);
-  }
+    const { data, error } = await getSupabase()
+      .from('snapshot_metrics')
+      .select('*')
+      .in('snapshot_id', idChunk);
 
-  const concentrationBySnapshot = new Map<
-    number,
-    { top10Pct: number; top20Pct: number }
-  >();
-  for (const row of holderRows) {
-    const concentration = concentrationBySnapshot.get(row.snapshot_id) || {
-      top10Pct: 0,
-      top20Pct: 0,
-    };
-    if (row.rank <= 10) {
-      concentration.top10Pct += row.pct_supply;
+    if (error) {
+      throw new Error(error.message);
     }
-    concentration.top20Pct += row.pct_supply;
-    concentrationBySnapshot.set(row.snapshot_id, concentration);
+
+    metricRows.push(...((data || []) as SnapshotMetricsRow[]));
   }
+  const metricsBySnapshot = new Map(
+    metricRows.map((row) => [row.snapshot_id, row.metrics]),
+  );
 
   return snapshots.map((snapshot) => {
-    const concentration = concentrationBySnapshot.get(snapshot.id);
+    const metrics = metricsBySnapshot.get(snapshot.id);
     return {
       id: snapshot.id,
       scanned_at: snapshot.scanned_at,
       holder_count: snapshot.holder_count,
       new_holder_count: snapshot.new_holder_count,
       dropped_holder_count: snapshot.dropped_holder_count,
-      top_10_pct: concentration?.top10Pct || 0,
-      top_20_pct: concentration?.top20Pct || 0,
+      top_10_pct: metrics?.top10Pct || 0,
+      top_20_pct: metrics?.top20Pct || 0,
       status: snapshot.status,
       source: snapshot.source,
     };

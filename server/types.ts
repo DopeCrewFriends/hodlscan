@@ -70,6 +70,31 @@ export interface HistoryRow {
   source: string;
 }
 
+export interface SnapshotMetricsRow {
+  snapshot_id: number;
+  metrics: DashboardMetrics;
+  distribution: DistributionBucket[];
+  created_at: string;
+}
+
+export interface DashboardMetrics {
+  top10Pct: number;
+  top20Pct: number;
+  averageHolderAgeDays: number;
+  oldestHolderAgeDays: number;
+  diamondHandsPct: number;
+  holderCount: number;
+  newHolderCount: number;
+  droppedHolderCount: number;
+}
+
+export interface DistributionBucket {
+  label: string;
+  holderCount: number;
+  pctSupply: number;
+  averageAgeDays: number;
+}
+
 export interface TokenMetadata {
   mint: string;
   name: string | null;

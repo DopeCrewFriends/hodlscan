@@ -1,11 +1,18 @@
-import { aggregateHolders, buildSnapshotResponse } from './analytics.js';
+import {
+  aggregateHolders,
+  buildDashboardMetrics,
+  buildDistribution,
+  buildSnapshotResponse,
+} from './analytics.js';
 import { config } from './config.js';
 import {
   getAllSnapshotHolders,
   getHistory,
   getHistoricalHoldingCache,
   getLatestSnapshot,
+  getSnapshotMetrics,
   getSnapshotHolders,
+  saveSnapshotMetrics,
   saveSnapshot,
 } from './db.js';
 import { attachHistoricalHoldingTimes } from './holder-history.js';
@@ -34,8 +41,8 @@ export async function getTokenResponse() {
 export async function getHoldersResponse() {
   const snapshot = await getLatestSnapshot();
   const holders = snapshot ? await getSnapshotHolders(snapshot.id) : [];
-  const metricHolders = snapshot ? await getAllSnapshotHolders(snapshot.id) : [];
-  return buildSnapshotResponse(snapshot, holders, metricHolders);
+  const snapshotMetrics = snapshot ? await getSnapshotMetrics(snapshot.id) : null;
+  return buildSnapshotResponse(snapshot, holders, snapshotMetrics);
 }
 
 export async function getHistoryResponse() {
@@ -103,8 +110,20 @@ export async function refreshSnapshotResponse({
   });
   const snapshotHolders = await getSnapshotHolders(snapshot.id);
   const metricHolders = await getAllSnapshotHolders(snapshot.id);
+  const metrics = buildDashboardMetrics(snapshot, metricHolders);
+  const distribution = buildDistribution(metricHolders);
+  await saveSnapshotMetrics({
+    snapshotId: snapshot.id,
+    metrics,
+    distribution,
+  });
 
-  return buildSnapshotResponse(snapshot, snapshotHolders, metricHolders);
+  return buildSnapshotResponse(snapshot, snapshotHolders, {
+    snapshot_id: snapshot.id,
+    metrics,
+    distribution,
+    created_at: new Date().toISOString(),
+  });
 }
 
 export function serializeError(error: unknown) {
