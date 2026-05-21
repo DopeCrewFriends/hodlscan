@@ -14,6 +14,10 @@
     {
       "source": "/coin/:mint",
       "destination": "/index.html"
+    },
+    {
+      "source": "/wallet/:address",
+      "destination": "/index.html"
     }
   ]
 }

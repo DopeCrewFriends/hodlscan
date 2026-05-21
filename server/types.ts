@@ -28,6 +28,17 @@ export interface AggregatedHolder {
   historicalHoldingSource?: string | null;
 }
 
+export type WalletType = 'wallet' | 'liquidity_pool' | 'program' | 'unknown';
+
+export interface WalletClassification {
+  owner: string;
+  wallet_type: WalletType;
+  classification_source: string;
+  classification_confidence: number;
+  exclude_from_holder_stats: boolean;
+  updated_at: string;
+}
+
 export interface SnapshotRow {
   id: number;
   mint: string;
@@ -56,6 +67,10 @@ export interface SnapshotHolderRow {
   current_streak_started_at: string | null;
   historical_holding_since_at: string | null;
   historical_holding_source: string | null;
+  wallet_type: WalletType;
+  classification_source: string | null;
+  classification_confidence: number;
+  exclude_from_holder_stats: boolean;
 }
 
 export interface HistoryRow {
@@ -86,6 +101,8 @@ export interface DashboardMetrics {
   holderCount: number;
   newHolderCount: number;
   droppedHolderCount: number;
+  excludedLiquidityPoolCount: number;
+  excludedLiquidityPoolPct: number;
 }
 
 export interface DistributionBucket {

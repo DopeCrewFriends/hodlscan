@@ -405,6 +405,13 @@ h1 {
     0 0 26px color-mix(in srgb, currentColor 18%, transparent);
 }
 
+.muted-value {
+  color: var(--muted);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .distribution-head {
   color: var(--muted);
   text-transform: uppercase;
@@ -418,17 +425,19 @@ h1 {
 
 .histogram {
   flex: 1;
+  min-width: 0;
   min-height: 11.75rem;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
+  overflow: visible;
 }
 
 .histogram-bars {
   flex: 1;
+  min-width: 0;
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0.55rem, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(0.45rem, 1fr));
   align-items: end;
   gap: 0.35rem;
   padding-top: 0.5rem;
@@ -577,6 +586,54 @@ h1 {
   background: rgb(68 240 162 / 5%);
 }
 
+.holder-row-excluded {
+  color: var(--muted);
+  background: rgb(255 204 102 / 3%);
+}
+
+.holder-row-excluded:not(.table-head):hover {
+  background: rgb(255 204 102 / 6%);
+}
+
+.wallet-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.wallet-link {
+  width: fit-content;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  font: inherit;
+  font-weight: 800;
+  text-align: left;
+}
+
+.wallet-link:hover {
+  color: var(--green);
+}
+
+.wallet-type-badge {
+  border: 1px solid rgb(255 255 255 / 10%);
+  background: rgb(255 255 255 / 4%);
+  color: var(--muted);
+  padding: 0.18rem 0.32rem;
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.wallet-type-badge-excluded {
+  border-color: rgb(255 204 102 / 35%);
+  background: rgb(255 204 102 / 8%);
+  color: var(--amber);
+}
+
 .diamond-hands-badge {
   width: 1.65rem;
   height: 1.65rem;
@@ -606,6 +663,31 @@ h1 {
 .empty-state {
   color: var(--muted);
   padding: 1rem 0;
+}
+
+.wallet-profile-page {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.wallet-profile-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(24rem, 1.2fr);
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem;
+}
+
+.wallet-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.wallet-profile-placeholder p {
+  margin: 0;
+  padding: 1rem;
+  color: var(--muted);
 }
 
 .missing-token-page {
@@ -790,6 +872,10 @@ h1 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .wallet-profile-card {
+    grid-template-columns: 1fr;
+  }
+
   .token-identity {
     align-items: flex-start;
   }
@@ -832,6 +918,10 @@ h1 {
   }
 
   .available-coin-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .wallet-profile-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

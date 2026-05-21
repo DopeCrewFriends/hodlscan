@@ -18,6 +18,7 @@ import {
 import { attachHistoricalHoldingTimes } from './holder-history.js';
 import { scanTokenHolders } from './holders.js';
 import { getTokenMetadata } from './metadata.js';
+import { classifyWalletOwners } from './wallet-classifier.js';
 
 export class HttpError extends Error {
   constructor(
@@ -91,6 +92,9 @@ export async function runSnapshotRefresh() {
   const enrichedHolders = holders.map(
     (holder) => enrichedByOwner.get(holder.owner) || holder,
   );
+  const walletClassifications = await classifyWalletOwners(
+    enrichedHolders.map((holder) => holder.owner),
+  );
   const snapshot = await saveSnapshot({
     mint: config.tokenMint,
     slot: scan.slot,
@@ -99,6 +103,7 @@ export async function runSnapshotRefresh() {
     decimals: scan.decimals,
     source: scan.source,
     holders: enrichedHolders,
+    walletClassifications,
     error: scan.error,
   });
   const snapshotHolders = await getSnapshotHolders(snapshot.id);

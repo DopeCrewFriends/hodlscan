@@ -10,6 +10,7 @@ import type {
   SnapshotHolderRow,
   SnapshotMetricsRow,
   SnapshotRow,
+  WalletClassification,
 } from './types.js';
 
 const PAGE_SIZE = 1000;
@@ -50,6 +51,7 @@ interface SaveSnapshotInput {
   decimals: number;
   source: string;
   holders: AggregatedHolder[];
+  walletClassifications?: WalletClassification[];
   error?: string | null;
 }
 
@@ -69,11 +71,65 @@ type SnapshotHolderRecord = Omit<
   | 'first_seen_at'
   | 'last_seen_at'
   | 'current_streak_started_at'
+  | 'wallet_type'
+  | 'classification_source'
+  | 'classification_confidence'
+  | 'exclude_from_holder_stats'
 > & {
   first_seen_at?: never;
   last_seen_at?: never;
   current_streak_started_at?: never;
+  wallet_type?: never;
+  classification_source?: never;
+  classification_confidence?: never;
+  exclude_from_holder_stats?: never;
 };
+
+const DEFAULT_WALLET_CLASSIFICATION = {
+  wallet_type: 'unknown',
+  classification_source: null,
+  classification_confidence: 0,
+  exclude_from_holder_stats: false,
+} as const;
+
+const KNOWN_POOL_CLASSIFICATION_SOURCES = new Map<string, string>([
+  ['rpc_owner:CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK', 'rpc_owner:raydium_clmm'],
+  ['rpc_owner:whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc', 'rpc_owner:orca_whirlpool'],
+]);
+
+function isMissingWalletClassificationsTable(error: { message: string }) {
+  return (
+    error.message.includes('wallet_classifications') &&
+    (error.message.includes('schema cache') ||
+      error.message.includes('does not exist'))
+  );
+}
+
+function normalizeWalletClassification(
+  classification: WalletClassification | undefined,
+) {
+  if (!classification) {
+    return DEFAULT_WALLET_CLASSIFICATION;
+  }
+
+  const normalizedSource = KNOWN_POOL_CLASSIFICATION_SOURCES.get(
+    classification.classification_source,
+  );
+  if (normalizedSource) {
+    return {
+      ...classification,
+      wallet_type: 'liquidity_pool' as const,
+      classification_source: normalizedSource,
+      classification_confidence: Math.max(
+        classification.classification_confidence,
+        0.92,
+      ),
+      exclude_from_holder_stats: true,
+    };
+  }
+
+  return classification;
+}
 
 function chunk<T>(values: T[], size: number) {
   const chunks: T[][] = [];
@@ -131,13 +187,48 @@ async function getWalletStates(
   return new Map(rows.map((row) => [row.owner, row]));
 }
 
+async function getWalletClassifications(
+  owners: string[],
+): Promise<Map<string, WalletClassification>> {
+  if (owners.length === 0) {
+    return new Map();
+  }
+
+  const rows: WalletClassification[] = [];
+  for (const ownerChunk of chunk([...new Set(owners)], READ_IN_CHUNK_SIZE)) {
+    const { data, error } = await getSupabase()
+      .from('wallet_classifications')
+      .select(
+        'owner, wallet_type, classification_source, classification_confidence, exclude_from_holder_stats, updated_at',
+      )
+      .in('owner', ownerChunk);
+
+    if (error) {
+      if (isMissingWalletClassificationsTable(error)) {
+        return new Map();
+      }
+      throw new Error(error.message);
+    }
+
+    rows.push(...((data || []) as WalletClassification[]));
+  }
+
+  return new Map(rows.map((row) => [row.owner, row]));
+}
+
 async function hydrateSnapshotHolders(
   holders: SnapshotHolderRecord[],
 ): Promise<SnapshotHolderRow[]> {
   const states = await getWalletStates(holders.map((holder) => holder.owner));
+  const classifications = await getWalletClassifications(
+    holders.map((holder) => holder.owner),
+  );
 
   return holders.map((holder) => {
     const state = states.get(holder.owner);
+    const classification = normalizeWalletClassification(
+      classifications.get(holder.owner),
+    );
     return {
       ...holder,
       first_seen_at: state?.first_seen_at || null,
@@ -151,6 +242,17 @@ async function hydrateSnapshotHolders(
         holder.historical_holding_source ||
         state?.historical_holding_source ||
         null,
+      wallet_type:
+        classification.wallet_type || DEFAULT_WALLET_CLASSIFICATION.wallet_type,
+      classification_source:
+        classification.classification_source ||
+        DEFAULT_WALLET_CLASSIFICATION.classification_source,
+      classification_confidence:
+        classification.classification_confidence ||
+        DEFAULT_WALLET_CLASSIFICATION.classification_confidence,
+      exclude_from_holder_stats:
+        classification.exclude_from_holder_stats ||
+        DEFAULT_WALLET_CLASSIFICATION.exclude_from_holder_stats,
     };
   });
 }
@@ -197,6 +299,24 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
 
   const snapshot = insertedSnapshot as SnapshotRow;
   const snapshotId = snapshot.id;
+
+  if (input.walletClassifications?.length) {
+    for (const classificationChunk of chunk(
+      input.walletClassifications,
+      WRITE_CHUNK_SIZE,
+    )) {
+      const { error } = await getSupabase()
+        .from('wallet_classifications')
+        .upsert(classificationChunk, { onConflict: 'owner' });
+
+      if (error) {
+        if (isMissingWalletClassificationsTable(error)) {
+          break;
+        }
+        throw new Error(error.message);
+      }
+    }
+  }
 
   const snapshotHolders = input.holders.map((holder) => ({
     snapshot_id: snapshotId,
@@ -298,15 +418,32 @@ export async function getLatestSnapshot(): Promise<SnapshotRow | null> {
   const { data, error } = await getSupabase()
     .from('snapshots')
     .select('*')
+    .gt('holder_count', 0)
     .order('id', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(25);
 
   if (error) {
     throw new Error(error.message);
   }
 
-  return (data as SnapshotRow | null) || null;
+  const snapshots = (data || []) as SnapshotRow[];
+  for (const snapshot of snapshots) {
+    const { data: holderRows, error: holderError } = await getSupabase()
+      .from('snapshot_holders')
+      .select('snapshot_id')
+      .eq('snapshot_id', snapshot.id)
+      .limit(1);
+
+    if (holderError) {
+      throw new Error(holderError.message);
+    }
+
+    if ((holderRows || []).length > 0) {
+      return snapshot;
+    }
+  }
+
+  return null;
 }
 
 export async function getSnapshotHolders(
@@ -438,7 +575,7 @@ export async function getHistory(): Promise<HistoryRow[]> {
     return {
       id: snapshot.id,
       scanned_at: snapshot.scanned_at,
-      holder_count: snapshot.holder_count,
+      holder_count: metrics?.holderCount || snapshot.holder_count,
       new_holder_count: snapshot.new_holder_count,
       dropped_holder_count: snapshot.dropped_holder_count,
       top_10_pct: metrics?.top10Pct || 0,

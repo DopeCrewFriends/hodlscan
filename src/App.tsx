@@ -5,6 +5,7 @@ const apiBase = import.meta.env.VITE_API_BASE_URL || '';
 const AUTO_REFRESH_SECONDS = 60;
 const DIAMOND_HANDS_IMAGE = '/assets/dhands.webp';
 const DIAMOND_HANDS_DAYS = 90;
+const MAX_HISTOGRAM_BARS = 56;
 const holderTimeFilters = [
   { id: 'all', label: 'all holders' },
   { id: 'under-1d', label: '< 1d', min: 0, max: 1 },
@@ -75,6 +76,10 @@ interface Holder {
   current_streak_started_at: string | null;
   historical_holding_since_at: string | null;
   historical_holding_source: string | null;
+  wallet_type: 'wallet' | 'liquidity_pool' | 'program' | 'unknown';
+  classification_source: string | null;
+  classification_confidence: number;
+  exclude_from_holder_stats: boolean;
   current_holder_age_days: number;
   holding_time_source: string;
 }
@@ -91,6 +96,8 @@ interface HolderResponse {
     holderCount: number;
     newHolderCount: number;
     droppedHolderCount: number;
+    excludedLiquidityPoolCount: number;
+    excludedLiquidityPoolPct: number;
   } | null;
   distribution: Array<{
     label: string;
@@ -117,6 +124,11 @@ type ChartTimeFilterId = (typeof chartTimeFilters)[number]['id'];
 
 function getRouteMint() {
   const match = window.location.pathname.match(/^\/coin\/([^/]+)\/?$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function getRouteWallet() {
+  const match = window.location.pathname.match(/^\/wallet\/([^/]+)\/?$/);
   return match ? decodeURIComponent(match[1]) : null;
 }
 
@@ -179,6 +191,17 @@ function isDiamondHands(days: number | null | undefined) {
   return Number.isFinite(days) && Number(days) >= DIAMOND_HANDS_DAYS;
 }
 
+function isExcludedHolder(holder: Holder) {
+  return holder.exclude_from_holder_stats;
+}
+
+function formatWalletType(type: Holder['wallet_type']) {
+  if (type === 'liquidity_pool') {
+    return 'LP';
+  }
+  return type;
+}
+
 function formatDistributionLabel(label: string) {
   return label.replace(/^top\b/i, 'Top');
 }
@@ -235,6 +258,24 @@ function matchesHolderTimeFilter(holder: Holder, filterId: HolderTimeFilterId) {
   return true;
 }
 
+function sampleHistoryPoints(points: HistoryPoint[], maxPoints: number) {
+  if (points.length <= maxPoints) {
+    return points;
+  }
+
+  const sampled: HistoryPoint[] = [];
+  const bucketSize = points.length / maxPoints;
+  for (let index = 0; index < maxPoints; index += 1) {
+    const pointIndex = Math.min(
+      points.length - 1,
+      Math.floor((index + 1) * bucketSize) - 1,
+    );
+    sampled.push(points[pointIndex]);
+  }
+
+  return sampled;
+}
+
 function StatCard({
   label,
   value,
@@ -277,13 +318,14 @@ function HolderTimeline({
   const activeChartFilter =
     chartTimeFilters.find((filter) => filter.id === chartTimeFilter) ||
     chartTimeFilters[0];
-  const recentHistory = Number.isFinite(activeChartFilter.days)
+  const filteredHistory = Number.isFinite(activeChartFilter.days)
     ? plottedHistory.filter(
         (point) =>
           new Date(point.scanned_at).getTime() >=
           nowMs - activeChartFilter.days * 24 * 60 * 60 * 1000,
       )
     : plottedHistory;
+  const recentHistory = sampleHistoryPoints(filteredHistory, MAX_HISTOGRAM_BARS);
   const counts = recentHistory.map((point) => point.holder_count);
   const rawMin = counts.length ? Math.min(...counts) : 0;
   const rawMax = counts.length ? Math.max(...counts) : 1;
@@ -385,6 +427,7 @@ function App() {
   const [chartTimeFilter, setChartTimeFilter] =
     useState<ChartTimeFilterId>('1d');
   const [routeMint, setRouteMint] = useState(() => getRouteMint());
+  const [routeWallet, setRouteWallet] = useState(() => getRouteWallet());
   const [searchValue, setSearchValue] = useState(() => getRouteMint() || '');
   const [error, setError] = useState<string | null>(null);
   const refreshingRef = useRef(false);
@@ -421,6 +464,7 @@ function App() {
   useEffect(() => {
     function handlePopState() {
       setRouteMint(getRouteMint());
+      setRouteWallet(getRouteWallet());
     }
 
     window.addEventListener('popstate', handlePopState);
@@ -428,13 +472,13 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!token || routeMint) {
+    if (!token || routeMint || routeWallet) {
       return;
     }
 
     window.history.replaceState(null, '', `/coin/${encodeURIComponent(token.mint)}`);
     setRouteMint(token.mint);
-  }, [routeMint, token]);
+  }, [routeMint, routeWallet, token]);
 
   async function syncCachedData({ silent = false }: { silent?: boolean } = {}) {
     if (refreshingRef.current || loadingRef.current) {
@@ -472,9 +516,10 @@ function App() {
   }
 
   const showingMissingToken = Boolean(routeMint && token && routeMint !== token.mint);
+  const showingWalletProfile = Boolean(routeWallet);
 
   useEffect(() => {
-    if (showingMissingToken) {
+    if (showingMissingToken || showingWalletProfile) {
       return undefined;
     }
 
@@ -495,7 +540,7 @@ function App() {
       window.clearInterval(countdown);
       window.clearInterval(syncTimer);
     };
-  }, [lastSyncAtMs, showingMissingToken]);
+  }, [lastSyncAtMs, showingMissingToken, showingWalletProfile]);
 
   const snapshot = holderData?.snapshot;
   const metrics = holderData?.metrics;
@@ -507,7 +552,9 @@ function App() {
   }, [snapshot]);
   const visibleAges = useMemo(() => {
     const holderAges =
-      holderData?.holders.map((holder) => holder.current_holder_age_days) || [];
+      holderData?.holders
+        .filter((holder) => !isExcludedHolder(holder))
+        .map((holder) => holder.current_holder_age_days) || [];
     const distributionAges =
       holderData?.distribution.map((bucket) => bucket.averageAgeDays) || [];
     const allAges = [...holderAges, ...distributionAges].filter((age) =>
@@ -523,10 +570,23 @@ function App() {
     const metricPct = metrics?.diamondHandsPct || 0;
     const visiblePct =
       holderData?.holders
+        .filter((holder) => !isExcludedHolder(holder))
         .filter((holder) => isDiamondHands(holder.current_holder_age_days))
         .reduce((sum, holder) => sum + holder.pct_supply, 0) || 0;
 
     return Math.max(metricPct, visiblePct);
+  }, [holderData, metrics]);
+  const oldestCurrentAgeDays = useMemo(() => {
+    const visibleOldest =
+      holderData?.holders.reduce(
+        (oldest, holder) =>
+          isExcludedHolder(holder)
+            ? oldest
+            : Math.max(oldest, holder.current_holder_age_days || 0),
+        0,
+      ) || 0;
+
+    return Math.max(metrics?.oldestHolderAgeDays || 0, visibleOldest);
   }, [holderData, metrics]);
   const filteredHolders = useMemo(
     () =>
@@ -545,6 +605,13 @@ function App() {
       ]),
     );
   }, [holderData]);
+  const walletProfileHolder = useMemo(
+    () =>
+      routeWallet
+        ? holderData?.holders.find((holder) => holder.owner === routeWallet) || null
+        : null,
+    [holderData, routeWallet],
+  );
 
   function handleSearchSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -560,6 +627,14 @@ function App() {
   function navigateToMint(mint: string) {
     window.history.pushState(null, '', `/coin/${encodeURIComponent(mint)}`);
     setRouteMint(mint);
+    setRouteWallet(null);
+    setSearchValue('');
+  }
+
+  function navigateToWallet(address: string) {
+    window.history.pushState(null, '', `/wallet/${encodeURIComponent(address)}`);
+    setRouteWallet(address);
+    setRouteMint(null);
     setSearchValue('');
   }
 
@@ -596,7 +671,66 @@ function App() {
           <span className="nav-spacer" aria-hidden="true" />
         </div>
       </nav>
-      {showingMissingToken ? (
+      {showingWalletProfile ? (
+        <section className="wallet-profile-page">
+          <section className="wallet-profile-card panel">
+            <div>
+              <span className="kicker">wallet profile</span>
+              <h1>{routeWallet ? shortAddress(routeWallet) : 'wallet'}</h1>
+              <div className="token-subtitle">
+                <span>{routeWallet}</span>
+              </div>
+            </div>
+            <div className="wallet-profile-grid">
+              <StatCard
+                label="rank"
+                value={walletProfileHolder ? `#${walletProfileHolder.rank}` : 'n/a'}
+                compact
+              />
+              <StatCard
+                label="balance"
+                value={walletProfileHolder ? formatCompact(walletProfileHolder.ui_amount) : 'n/a'}
+                compact
+              />
+              <StatCard
+                label="supply"
+                value={
+                  walletProfileHolder
+                    ? `${formatNumber(walletProfileHolder.pct_supply)}%`
+                    : 'n/a'
+                }
+                compact
+              />
+              <StatCard
+                label="holding"
+                value={
+                  walletProfileHolder
+                    ? formatAge(walletProfileHolder.current_holder_age_days)
+                    : 'n/a'
+                }
+                compact
+              />
+              <StatCard
+                label="type"
+                value={
+                  walletProfileHolder
+                    ? formatWalletType(walletProfileHolder.wallet_type)
+                    : 'unknown'
+                }
+                compact
+              />
+            </div>
+          </section>
+          <section className="wallet-profile-placeholder panel">
+            <div className="panel-title">
+              <span>profile foundation</span>
+            </div>
+            <p>
+              Basic wallet route is ready. More wallet intelligence will plug in here.
+            </p>
+          </section>
+        </section>
+      ) : showingMissingToken ? (
         <section className="missing-token-page">
           <div className="missing-token-stack">
             <div className="missing-token-card panel">
@@ -723,9 +857,9 @@ function App() {
           />
           <StatCard
             label="oldest current"
-            value={formatAge(metrics?.oldestHolderAgeDays || 0)}
+            value={formatAge(oldestCurrentAgeDays)}
             valueStyle={ageGradientStyle(
-              metrics?.oldestHolderAgeDays,
+              oldestCurrentAgeDays,
               visibleAges.min,
               visibleAges.max,
             )}
@@ -819,9 +953,37 @@ function App() {
           </div>
           {filteredHolders.length ? (
             filteredHolders.map((holder) => (
-              <div className="table-row" key={holder.owner}>
+              <div
+                className={
+                  isExcludedHolder(holder)
+                    ? 'table-row holder-row-excluded'
+                    : 'table-row'
+                }
+                key={holder.owner}
+              >
                 <span>#{holder.rank}</span>
-                <span title={holder.owner}>{shortAddress(holder.owner)}</span>
+                <span className="wallet-cell">
+                  <button
+                    className="wallet-link"
+                    type="button"
+                    title={holder.owner}
+                    onClick={() => navigateToWallet(holder.owner)}
+                  >
+                    {shortAddress(holder.owner)}
+                  </button>
+                  {holder.wallet_type !== 'wallet' ? (
+                    <span
+                      className={
+                        isExcludedHolder(holder)
+                          ? 'wallet-type-badge wallet-type-badge-excluded'
+                          : 'wallet-type-badge'
+                      }
+                      title={holder.classification_source || undefined}
+                    >
+                      {formatWalletType(holder.wallet_type)}
+                    </span>
+                  ) : null}
+                </span>
                 <span>{formatCompact(holder.ui_amount)}</span>
                 <span>{formatNumber(holder.pct_supply)}%</span>
                 <span>
@@ -832,15 +994,15 @@ function App() {
                     : 'n/a'}
                 </span>
                 <span
-                  className="age-value"
+                  className={isExcludedHolder(holder) ? 'muted-value' : 'age-value'}
                   style={ageGradientStyle(
                     holder.current_holder_age_days,
                     visibleAges.min,
                     visibleAges.max,
                   )}
                 >
-                  {formatAge(holder.current_holder_age_days)}
-                  {isDiamondHands(holder.current_holder_age_days) ? (
+                  {isExcludedHolder(holder) ? 'pool' : formatAge(holder.current_holder_age_days)}
+                  {!isExcludedHolder(holder) && isDiamondHands(holder.current_holder_age_days) ? (
                     <img
                       className="diamond-hands-badge"
                       src={DIAMOND_HANDS_IMAGE}

@@ -10,6 +10,10 @@ import type {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DIAMOND_HANDS_DAYS = 90;
 
+function getStatHolders(holders: SnapshotHolderRow[]) {
+  return holders.filter((holder) => !holder.exclude_from_holder_stats);
+}
+
 export function aggregateHolders(
   holders: Array<{ owner: string; tokenAccount: string; rawAmount: bigint }>,
   supply: bigint,
@@ -64,11 +68,10 @@ export function buildDistribution(holders: SnapshotHolderRow[]): DistributionBuc
     { label: 'Top 250', to: 250 },
   ];
   const now = Date.now();
+  const statHolders = getStatHolders(holders);
 
   return buckets.map((bucket) => {
-    const bucketHolders = holders.filter(
-      (holder) => holder.rank <= bucket.to,
-    );
+    const bucketHolders = statHolders.slice(0, bucket.to);
     const holderAges = bucketHolders
       .map((holder) => {
         const since =
@@ -106,13 +109,17 @@ export function buildDashboardMetrics(
   holders: SnapshotHolderRow[],
 ): DashboardMetrics {
   const now = Date.now();
-  const knownHistoricalAges = holders
+  const statHolders = getStatHolders(holders);
+  const excludedHolders = holders.filter(
+    (holder) => holder.exclude_from_holder_stats,
+  );
+  const knownHistoricalAges = statHolders
     .map((holder) => {
       const since = holder.historical_holding_since_at;
       return since ? now - new Date(since).getTime() : 0;
     })
     .filter((age) => age > 0);
-  const allHolderAges = holders
+  const allHolderAges = statHolders
     .map((holder) => getHolderAgeDays(holder, now))
     .filter((age) => age > 0);
   const averageHolderAgeDays =
@@ -123,23 +130,28 @@ export function buildDashboardMetrics(
       : 0;
   const oldestHolderAgeDays =
     allHolderAges.length > 0 ? Math.max(...allHolderAges) / DAY_MS : 0;
-  const diamondHandsPct = holders
+  const diamondHandsPct = statHolders
     .filter((holder) => getHolderAgeDays(holder, now) >= DIAMOND_HANDS_DAYS)
     .reduce((sum, holder) => sum + holder.pct_supply, 0);
 
   return {
-    top10Pct: holders
-      .filter((holder) => holder.rank <= 10)
+    top10Pct: statHolders
+      .slice(0, 10)
       .reduce((sum, holder) => sum + holder.pct_supply, 0),
-    top20Pct: holders
-      .filter((holder) => holder.rank <= 20)
+    top20Pct: statHolders
+      .slice(0, 20)
       .reduce((sum, holder) => sum + holder.pct_supply, 0),
     averageHolderAgeDays,
     oldestHolderAgeDays,
     diamondHandsPct,
-    holderCount: snapshot.holder_count,
+    holderCount: statHolders.length,
     newHolderCount: snapshot.new_holder_count,
     droppedHolderCount: snapshot.dropped_holder_count,
+    excludedLiquidityPoolCount: excludedHolders.length,
+    excludedLiquidityPoolPct: excludedHolders.reduce(
+      (sum, holder) => sum + holder.pct_supply,
+      0,
+    ),
   };
 }
 
