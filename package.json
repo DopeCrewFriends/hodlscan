@@ -17,6 +17,7 @@
   "dependencies": {
     "@fontsource/geist-sans": "^5.2.5",
     "@supabase/supabase-js": "^2.106.1",
+    "@vercel/analytics": "^2.0.1",
     "bs58": "^6.0.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
