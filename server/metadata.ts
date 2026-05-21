@@ -1,19 +1,6 @@
-import { PublicKey } from '@solana/web3.js';
-
 import { config } from './config.js';
 import { callRpc } from './rpc.js';
 import type { TokenMetadata } from './types.js';
-
-const METADATA_PROGRAM_ID = new PublicKey(
-  'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s',
-);
-
-interface AccountInfoResult {
-  context: { slot: number };
-  value: {
-    data: [string, string] | string;
-  } | null;
-}
 
 interface OffchainMetadata {
   name?: string;
@@ -48,31 +35,6 @@ interface DasAssetResult {
 }
 
 let metadataCache: TokenMetadata | null = null;
-
-function readBorshString(data: Buffer, offset: number) {
-  const length = data.readUInt32LE(offset);
-  const start = offset + 4;
-  const end = start + length;
-  return {
-    value: data.subarray(start, end).toString('utf8').replace(/\0/g, '').trim(),
-    offset: end,
-  };
-}
-
-function parseMetaplexMetadata(data: Buffer) {
-  let offset = 1 + 32 + 32;
-  const name = readBorshString(data, offset);
-  offset = name.offset;
-  const symbol = readBorshString(data, offset);
-  offset = symbol.offset;
-  const uri = readBorshString(data, offset);
-
-  return {
-    name: name.value || null,
-    symbol: symbol.value || null,
-    uri: uri.value || null,
-  };
-}
 
 function normalizeIpfsUrl(uri: string) {
   if (uri.startsWith('ipfs://')) {
@@ -132,7 +94,7 @@ function extractDasImage(asset: DasAssetResult) {
   return null;
 }
 
-async function getDasMetadata(previousError?: string): Promise<TokenMetadata> {
+async function getDasMetadata(): Promise<TokenMetadata> {
   const asset = await callRpc<DasAssetResult>('getAsset', {
     id: config.tokenMint,
     options: {
@@ -154,7 +116,6 @@ async function getDasMetadata(previousError?: string): Promise<TokenMetadata> {
     image: offchain ? extractImage(offchain) : extractDasImage(asset.data),
     description: offchain?.description || content?.metadata?.description || null,
     source: `${asset.endpoint}:getAsset`,
-    error: previousError,
   };
 }
 
@@ -166,63 +127,20 @@ export async function getTokenMetadata(
   }
 
   try {
-    const mint = new PublicKey(config.tokenMint);
-    const [metadataAddress] = PublicKey.findProgramAddressSync(
-      [Buffer.from('metadata'), METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-      METADATA_PROGRAM_ID,
-    );
-
-    const account = await callRpc<AccountInfoResult>('getAccountInfo', [
-      metadataAddress.toBase58(),
-      { encoding: 'base64', commitment: 'confirmed' },
-    ]);
-
-    if (!account.data.value) {
-      throw new Error('Metaplex metadata account not found');
-    }
-
-    const rawData = Array.isArray(account.data.value.data)
-      ? account.data.value.data[0]
-      : account.data.value.data;
-    const onchain = parseMetaplexMetadata(Buffer.from(rawData, 'base64'));
-    const offchain = await fetchOffchainMetadata(onchain.uri).catch((error) => {
-      console.warn(
-        `metadata URI fetch failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return null;
-    });
-
-    metadataCache = {
-      mint: config.tokenMint,
-      name: offchain?.name || onchain.name,
-      symbol: offchain?.symbol || onchain.symbol,
-      uri: onchain.uri,
-      image: offchain ? extractImage(offchain) : null,
-      description: offchain?.description || null,
-      source: `${account.endpoint}:metaplex`,
-    };
+    metadataCache = await getDasMetadata();
     return metadataCache;
   } catch (error) {
-    const metaplexError = error instanceof Error ? error.message : String(error);
-    try {
-      metadataCache = await getDasMetadata(metaplexError);
-      return metadataCache;
-    } catch (dasError) {
-      const dasMessage =
-        dasError instanceof Error ? dasError.message : String(dasError);
-      metadataCache = {
-        mint: config.tokenMint,
-        name: null,
-        symbol: null,
-        uri: null,
-        image: null,
-        description: null,
-        source: 'none',
-        error: `${metaplexError} | getAsset failed: ${dasMessage}`,
-      };
-      return metadataCache;
-    }
+    const message = error instanceof Error ? error.message : String(error);
+    metadataCache = {
+      mint: config.tokenMint,
+      name: null,
+      symbol: null,
+      uri: null,
+      image: null,
+      description: null,
+      source: 'none',
+      error: `getAsset failed: ${message}`,
+    };
+    return metadataCache;
   }
 }

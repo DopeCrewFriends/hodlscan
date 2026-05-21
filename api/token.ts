@@ -1,15 +1,23 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { getTokenResponse, serializeError } from '../server/handlers.js';
+import { config } from '../server/config.js';
+import { getTokenMetadata } from '../server/metadata.js';
 
 export default async function handler(
   _req: VercelRequest,
   res: VercelResponse,
 ) {
   try {
-    res.status(200).json(await getTokenResponse());
+    const metadata = await getTokenMetadata();
+    res.status(200).json({
+      mint: config.tokenMint,
+      endpoints: config.rpcEndpoints.map((endpoint) => endpoint.name),
+      maxDisplayHolders: config.maxDisplayHolders,
+      metadata,
+    });
   } catch (error) {
-    const serialized = serializeError(error);
-    res.status(serialized.status).json(serialized.body);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
