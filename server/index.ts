@@ -10,6 +10,7 @@ import {
   getHoldersResponse,
   getTokenResponse,
   refreshSnapshotResponse,
+  runSnapshotRefresh,
   serializeError,
 } from './handlers.js';
 
@@ -37,6 +38,7 @@ app.post('/api/refresh', async (req, res) => {
       await refreshSnapshotResponse({
         authorization: req.header('authorization') || undefined,
         refreshSecret: req.header('x-hodlscan-refresh-secret') || undefined,
+        vercelCron: req.header('x-vercel-cron') || undefined,
       }),
     );
   } catch (error) {
@@ -44,6 +46,29 @@ app.post('/api/refresh', async (req, res) => {
     res.status(serialized.status).json(serialized.body);
   }
 });
+
+let localRefreshRunning = false;
+async function runLocalAutoRefresh() {
+  if (localRefreshRunning) {
+    return;
+  }
+
+  localRefreshRunning = true;
+  try {
+    const refreshed = await runSnapshotRefresh();
+    console.log(
+      `auto refresh snapshot #${refreshed.snapshot?.id} (${refreshed.metrics?.holderCount} holders)`,
+    );
+  } catch (error) {
+    console.error(
+      `auto refresh failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  } finally {
+    localRefreshRunning = false;
+  }
+}
 
 if (process.env.NODE_ENV === 'production') {
   const distDir = path.join(config.rootDir, 'dist');
@@ -61,4 +86,10 @@ app.listen(config.port, () => {
       config.rpcEndpoints.map((endpoint) => endpoint.name).join(', ') || 'none'
     }`,
   );
+  if (!process.env.VERCEL && !config.disableLocalAutoRefresh) {
+    console.log(`local auto refresh every ${config.autoRefreshMs / 1000}s`);
+    setInterval(() => {
+      void runLocalAutoRefresh();
+    }, config.autoRefreshMs);
+  }
 });

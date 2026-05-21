@@ -52,9 +52,11 @@ export async function getHistoryResponse() {
 export function isAuthorizedRefresh({
   authorization,
   refreshSecret,
+  vercelCron,
 }: {
   authorization?: string;
   refreshSecret?: string;
+  vercelCron?: string;
 }) {
   if (!config.refreshSecret) {
     return false;
@@ -62,22 +64,13 @@ export function isAuthorizedRefresh({
 
   const bearerToken = authorization?.replace(/^Bearer\s+/i, '');
   return (
+    vercelCron === '1' ||
     bearerToken === config.refreshSecret ||
     refreshSecret === config.refreshSecret
   );
 }
 
-export async function refreshSnapshotResponse({
-  authorization,
-  refreshSecret,
-}: {
-  authorization?: string;
-  refreshSecret?: string;
-}) {
-  if (!isAuthorizedRefresh({ authorization, refreshSecret })) {
-    throw new HttpError(404, 'Not found');
-  }
-
+export async function runSnapshotRefresh() {
   const scan = await scanTokenHolders();
   const holders = aggregateHolders(
     scan.holders,
@@ -124,6 +117,22 @@ export async function refreshSnapshotResponse({
     distribution,
     created_at: new Date().toISOString(),
   });
+}
+
+export async function refreshSnapshotResponse({
+  authorization,
+  refreshSecret,
+  vercelCron,
+}: {
+  authorization?: string;
+  refreshSecret?: string;
+  vercelCron?: string;
+}) {
+  if (!isAuthorizedRefresh({ authorization, refreshSecret, vercelCron })) {
+    throw new HttpError(404, 'Not found');
+  }
+
+  return runSnapshotRefresh();
 }
 
 export function serializeError(error: unknown) {

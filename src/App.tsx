@@ -1,10 +1,24 @@
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, FormEvent, ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || '';
 const AUTO_REFRESH_SECONDS = 60;
 const DIAMOND_HANDS_IMAGE = '/assets/dhands.webp';
 const DIAMOND_HANDS_DAYS = 90;
+const holderTimeFilters = [
+  { id: 'all', label: 'all holders' },
+  { id: 'under-1d', label: '< 1d', min: 0, max: 1 },
+  { id: '1-7d', label: '1-7d', min: 1, max: 7 },
+  { id: '7-30d', label: '7-30d', min: 7, max: 30 },
+  { id: '30-90d', label: '30-90d', min: 30, max: 90 },
+  { id: '90d-plus', label: '90d+', min: 90 },
+] as const;
+const chartTimeFilters = [
+  { id: '1d', label: '1d', days: 1 },
+  { id: '7d', label: '7d', days: 7 },
+  { id: '30d', label: '30d', days: 30 },
+  { id: 'all', label: 'all', days: Number.POSITIVE_INFINITY },
+] as const;
 const percentFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
   minimumFractionDigits: 2,
@@ -15,6 +29,10 @@ const compactFormatter = new Intl.NumberFormat('en-US', {
 });
 const wholeNumberFormatter = new Intl.NumberFormat('en-US');
 const dateFormatter = new Intl.DateTimeFormat(undefined);
+const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+});
 
 interface TokenInfo {
   mint: string;
@@ -94,6 +112,14 @@ interface HistoryPoint {
   source: string;
 }
 
+type HolderTimeFilterId = (typeof holderTimeFilters)[number]['id'];
+type ChartTimeFilterId = (typeof chartTimeFilters)[number]['id'];
+
+function getRouteMint() {
+  const match = window.location.pathname.match(/^\/coin\/([^/]+)\/?$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBase}${path}`, init);
   if (!response.ok) {
@@ -161,6 +187,54 @@ function formatDate(value: string | null | undefined) {
   return value ? dateFormatter.format(new Date(value)) : 'n/a';
 }
 
+function formatDateTime(value: string | null | undefined) {
+  return value ? dateTimeFormatter.format(new Date(value)) : 'n/a';
+}
+
+function formatRelativeTime(value: string | null | undefined, nowMs: number) {
+  if (!value) {
+    return 'no scan yet';
+  }
+
+  const elapsedSeconds = Math.max(
+    0,
+    Math.floor((nowMs - new Date(value).getTime()) / 1000),
+  );
+  if (elapsedSeconds < 60) {
+    return `${elapsedSeconds}s ago`;
+  }
+
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m ago`;
+  }
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) {
+    return `${elapsedHours}h ago`;
+  }
+
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  return `${elapsedDays}d ago`;
+}
+
+function matchesHolderTimeFilter(holder: Holder, filterId: HolderTimeFilterId) {
+  const filter = holderTimeFilters.find((item) => item.id === filterId);
+  if (!filter || filter.id === 'all') {
+    return true;
+  }
+
+  const days = holder.current_holder_age_days;
+  if ('min' in filter && filter.min !== undefined && days < filter.min) {
+    return false;
+  }
+  if ('max' in filter && filter.max !== undefined && days >= filter.max) {
+    return false;
+  }
+
+  return true;
+}
+
 function StatCard({
   label,
   value,
@@ -188,13 +262,28 @@ function HolderTimeline({
   history,
   nextRefreshSeconds,
   refreshing,
+  nowMs,
+  chartTimeFilter,
+  onChartTimeFilterChange,
 }: {
   history: HistoryPoint[];
   nextRefreshSeconds: number;
   refreshing: boolean;
+  nowMs: number;
+  chartTimeFilter: ChartTimeFilterId;
+  onChartTimeFilterChange: (filter: ChartTimeFilterId) => void;
 }) {
   const plottedHistory = history.filter((point) => point.holder_count > 0);
-  const recentHistory = plottedHistory.slice(-24);
+  const activeChartFilter =
+    chartTimeFilters.find((filter) => filter.id === chartTimeFilter) ||
+    chartTimeFilters[0];
+  const recentHistory = Number.isFinite(activeChartFilter.days)
+    ? plottedHistory.filter(
+        (point) =>
+          new Date(point.scanned_at).getTime() >=
+          nowMs - activeChartFilter.days * 24 * 60 * 60 * 1000,
+      )
+    : plottedHistory;
   const counts = recentHistory.map((point) => point.holder_count);
   const rawMin = counts.length ? Math.min(...counts) : 0;
   const rawMax = counts.length ? Math.max(...counts) : 1;
@@ -208,19 +297,36 @@ function HolderTimeline({
     <section className="panel timeline-panel">
       <div className="panel-title">
         <span>holder count</span>
-        <small>
-          {refreshing
-            ? 'syncing now'
-            : `updates in ${nextRefreshSeconds}s`}
-        </small>
+        <div className="panel-title-actions">
+          <div className="chart-filters" aria-label="Holder count time filters">
+            {chartTimeFilters.map((filter) => (
+              <button
+                className={
+                  filter.id === chartTimeFilter
+                    ? 'chart-filter chart-filter-active'
+                    : 'chart-filter'
+                }
+                key={filter.id}
+                type="button"
+                onClick={() => onChartTimeFilterChange(filter.id)}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+          <small>
+            {refreshing
+              ? 'syncing now'
+              : `updates in ${nextRefreshSeconds}s`}
+          </small>
+        </div>
       </div>
       <div className="histogram">
         {plottedHistory.length === 0 ? (
           <div className="empty-state">waiting for holder count data</div>
         ) : (
-          <>
-            <div className="histogram-bars">
-              {recentHistory.map((point, index) => {
+          <div className="histogram-bars">
+            {recentHistory.map((point, index) => {
                 const previous = recentHistory[index - 1];
                 const delta = previous
                   ? point.holder_count - previous.holder_count
@@ -232,7 +338,6 @@ function HolderTimeline({
                   <div
                     className="histogram-bar"
                     key={point.id}
-                    title={`#${point.id}: ${point.holder_count} holders (${delta >= 0 ? '+' : ''}${delta})`}
                   >
                     <div
                       className={`histogram-fill ${
@@ -245,18 +350,20 @@ function HolderTimeline({
                       style={{ height: `${scaledHeight}%` }}
                     />
                     <span className="histogram-value">
-                      {wholeNumberFormatter.format(point.holder_count)}
+                      <span>
+                        <strong>{wholeNumberFormatter.format(point.holder_count)}</strong>
+                        {' · '}
+                        {formatDateTime(point.scanned_at)}
+                      </span>
+                      <span>
+                        {delta >= 0 ? '+' : ''}
+                        {delta} · {formatRelativeTime(point.scanned_at, nowMs)}
+                      </span>
                     </span>
                   </div>
                 );
-              })}
-            </div>
-            <div className="histogram-axis">
-              <span>
-                latest {recentHistory[recentHistory.length - 1]?.holder_count} holders
-              </span>
-            </div>
-          </>
+            })}
+          </div>
         )}
       </div>
     </section>
@@ -271,6 +378,14 @@ function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [nextRefreshSeconds, setNextRefreshSeconds] =
     useState(AUTO_REFRESH_SECONDS);
+  const [lastSyncAtMs, setLastSyncAtMs] = useState(Date.now());
+  const [nowMs, setNowMs] = useState(Date.now());
+  const [holderTimeFilter, setHolderTimeFilter] =
+    useState<HolderTimeFilterId>('all');
+  const [chartTimeFilter, setChartTimeFilter] =
+    useState<ChartTimeFilterId>('1d');
+  const [routeMint, setRouteMint] = useState(() => getRouteMint());
+  const [searchValue, setSearchValue] = useState(() => getRouteMint() || '');
   const [error, setError] = useState<string | null>(null);
   const refreshingRef = useRef(false);
   const loadingRef = useRef(true);
@@ -284,6 +399,7 @@ function App() {
     setToken(tokenResponse);
     setHolderData(holdersResponse);
     setHistory(historyResponse.history);
+    setLastSyncAtMs(Date.now());
   }
 
   useEffect(() => {
@@ -301,6 +417,24 @@ function App() {
   useEffect(() => {
     refreshingRef.current = refreshing;
   }, [refreshing]);
+
+  useEffect(() => {
+    function handlePopState() {
+      setRouteMint(getRouteMint());
+    }
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (!token || routeMint) {
+      return;
+    }
+
+    window.history.replaceState(null, '', `/coin/${encodeURIComponent(token.mint)}`);
+    setRouteMint(token.mint);
+  }, [routeMint, token]);
 
   async function syncCachedData({ silent = false }: { silent?: boolean } = {}) {
     if (refreshingRef.current || loadingRef.current) {
@@ -320,6 +454,8 @@ function App() {
       ]);
       setHolderData(holdersResponse);
       setHistory(historyResponse.history);
+      const syncedAt = Date.now();
+      setLastSyncAtMs(syncedAt);
       setNextRefreshSeconds(AUTO_REFRESH_SECONDS);
     } catch (syncError) {
       const message =
@@ -335,10 +471,19 @@ function App() {
     }
   }
 
+  const showingMissingToken = Boolean(routeMint && token && routeMint !== token.mint);
+
   useEffect(() => {
+    if (showingMissingToken) {
+      return undefined;
+    }
+
     const countdown = window.setInterval(() => {
-      setNextRefreshSeconds((value) =>
-        value <= 1 ? AUTO_REFRESH_SECONDS : value - 1,
+      const currentNowMs = Date.now();
+      setNowMs(currentNowMs);
+      const elapsedSeconds = Math.floor((currentNowMs - lastSyncAtMs) / 1000);
+      setNextRefreshSeconds(
+        AUTO_REFRESH_SECONDS - (elapsedSeconds % AUTO_REFRESH_SECONDS),
       );
     }, 1000);
 
@@ -350,7 +495,7 @@ function App() {
       window.clearInterval(countdown);
       window.clearInterval(syncTimer);
     };
-  }, []);
+  }, [lastSyncAtMs, showingMissingToken]);
 
   const snapshot = holderData?.snapshot;
   const metrics = holderData?.metrics;
@@ -383,13 +528,59 @@ function App() {
 
     return Math.max(metricPct, visiblePct);
   }, [holderData, metrics]);
+  const filteredHolders = useMemo(
+    () =>
+      holderData?.holders.filter((holder) =>
+        matchesHolderTimeFilter(holder, holderTimeFilter),
+      ) || [],
+    [holderData, holderTimeFilter],
+  );
+  const holderFilterCounts = useMemo(() => {
+    const holders = holderData?.holders || [];
+    return new Map(
+      holderTimeFilters.map((filter) => [
+        filter.id,
+        holders.filter((holder) => matchesHolderTimeFilter(holder, filter.id))
+          .length,
+      ]),
+    );
+  }, [holderData]);
+
+  function handleSearchSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextSearch = searchValue.trim();
+    if (!nextSearch) {
+      return;
+    }
+
+    window.history.pushState(null, '', `/coin/${encodeURIComponent(nextSearch)}`);
+    setRouteMint(nextSearch);
+  }
+
+  function navigateToMint(mint: string) {
+    window.history.pushState(null, '', `/coin/${encodeURIComponent(mint)}`);
+    setRouteMint(mint);
+    setSearchValue('');
+  }
+
+  function handleBrandClick() {
+    if (token) {
+      navigateToMint(token.mint);
+    }
+  }
 
   return (
     <main className="terminal-shell">
       <nav className="app-nav panel" aria-label="Hodlscan">
         <div className="app-nav-inner">
-          <span className="app-brand">hodlscan</span>
-          <form className="token-search" role="search">
+          <button
+            className="app-brand app-brand-button"
+            type="button"
+            onClick={handleBrandClick}
+          >
+            hodlscan
+          </button>
+          <form className="token-search" role="search" onSubmit={handleSearchSubmit}>
             <label htmlFor="token-search" className="sr-only">
               Search tokens
             </label>
@@ -398,11 +589,77 @@ function App() {
               type="search"
               placeholder="Search tokens"
               autoComplete="off"
+              value={searchValue}
+              onChange={(event) => setSearchValue(event.target.value)}
             />
           </form>
           <span className="nav-spacer" aria-hidden="true" />
         </div>
       </nav>
+      {showingMissingToken ? (
+        <section className="missing-token-page">
+          <div className="missing-token-stack">
+            <div className="missing-token-card panel">
+              We dont have data for this coin yet.
+            </div>
+            <section className="available-coins panel" aria-label="Coins with data">
+              <div className="available-coins-title">coins we have data for</div>
+              <button
+                className="available-coin"
+                type="button"
+                onClick={() => {
+                  if (token) {
+                    navigateToMint(token.mint);
+                  }
+                }}
+              >
+                <span className="available-coin-main">
+                  <span className="available-coin-image">
+                    {token?.metadata.image ? (
+                      <img
+                        src={token.metadata.image}
+                        alt={token.metadata.name || token.metadata.symbol || token.mint}
+                      />
+                    ) : (
+                      <span>{token?.metadata.symbol?.slice(0, 3) || 'HODL'}</span>
+                    )}
+                  </span>
+                  <span>
+                    <span className="available-coin-symbol">
+                      {token?.metadata.symbol || 'HODL'}
+                    </span>
+                    <span className="available-coin-name">
+                      {token?.metadata.name || 'HODL'}
+                    </span>
+                    <span className="available-coin-mint">
+                      {token ? shortAddress(token.mint) : 'loading'}
+                    </span>
+                  </span>
+                </span>
+                <span className="available-coin-stats">
+                  <span>
+                    <small>holders</small>
+                    <strong>{metrics ? wholeNumberFormatter.format(metrics.holderCount) : '0'}</strong>
+                  </span>
+                  <span>
+                    <small>supply</small>
+                    <strong>{formatCompact(supply)}</strong>
+                  </span>
+                  <span>
+                    <small>diamond</small>
+                    <strong>{formatNumber(diamondHandsPct)}%</strong>
+                  </span>
+                  <span>
+                    <small>avg age</small>
+                    <strong>{formatAge(metrics?.averageHolderAgeDays || 0)}</strong>
+                  </span>
+                </span>
+              </button>
+            </section>
+          </div>
+        </section>
+      ) : (
+        <>
       <header className="command-bar panel">
         <div className="token-identity">
           <div className="token-image-frame">
@@ -483,6 +740,9 @@ function App() {
           history={history}
           nextRefreshSeconds={nextRefreshSeconds}
           refreshing={refreshing}
+          nowMs={nowMs}
+          chartTimeFilter={chartTimeFilter}
+          onChartTimeFilterChange={setChartTimeFilter}
         />
         <section className="panel distribution-panel">
           <div className="panel-title">
@@ -523,11 +783,30 @@ function App() {
       <section className="panel table-panel">
         <div className="panel-title">
           <span>holders</span>
-          <small>
-            {snapshot?.scanned_at
-              ? `last scan ${new Date(snapshot.scanned_at).toLocaleString()}`
-              : 'no scan yet'}
-          </small>
+          <div className="panel-title-actions">
+            <div className="holder-filters" aria-label="Holder time filters">
+              {holderTimeFilters.map((filter) => (
+                <button
+                  className={
+                    filter.id === holderTimeFilter
+                      ? 'holder-filter holder-filter-active'
+                      : 'holder-filter'
+                  }
+                  key={filter.id}
+                  type="button"
+                  onClick={() => setHolderTimeFilter(filter.id)}
+                >
+                  <span>{filter.label}</span>
+                  <small>{holderFilterCounts.get(filter.id) || 0}</small>
+                </button>
+              ))}
+            </div>
+            <small>
+              {snapshot?.scanned_at
+                ? `updated ${formatRelativeTime(snapshot.scanned_at, nowMs)}`
+                : 'no scan yet'}
+            </small>
+          </div>
         </div>
         <div className="holder-table">
           <div className="table-row table-head">
@@ -538,8 +817,8 @@ function App() {
             <span>first seen</span>
             <span>holding</span>
           </div>
-          {holderData?.holders.length ? (
-            holderData.holders.map((holder) => (
+          {filteredHolders.length ? (
+            filteredHolders.map((holder) => (
               <div className="table-row" key={holder.owner}>
                 <span>#{holder.rank}</span>
                 <span title={holder.owner}>{shortAddress(holder.owner)}</span>
@@ -577,11 +856,15 @@ function App() {
             ))
           ) : (
             <div className="empty-state table-empty">
-              no holders cached yet. run refresh to scan the configured mint.
+              {holderData?.holders.length
+                ? 'no holders match this time filter.'
+                : 'no holders cached yet. run refresh to scan the configured mint.'}
             </div>
           )}
         </div>
       </section>
+        </>
+      )}
     </main>
   );
 }

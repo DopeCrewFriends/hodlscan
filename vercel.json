@@ -2,12 +2,18 @@
   "crons": [
     {
       "path": "/api/refresh",
-      "schedule": "*/5 * * * *"
+      "schedule": "* * * * *"
     }
   ],
   "functions": {
     "api/refresh.ts": {
       "maxDuration": 300
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/coin/:mint",
+      "destination": "/index.html"
+    }
+  ]
 }

@@ -19,6 +19,7 @@ export default async function handler(
         refreshSecret: req.headers['x-hodlscan-refresh-secret'] as
           | string
           | undefined,
+        vercelCron: req.headers['x-vercel-cron'] as string | undefined,
       }),
     );
   } catch (error) {
