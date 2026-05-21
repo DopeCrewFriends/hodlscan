@@ -26,7 +26,8 @@ export const config = {
   maxDisplayHolders: Number(process.env.MAX_DISPLAY_HOLDERS || 250),
   autoRefreshMs: Number(process.env.AUTO_REFRESH_MS || 60_000),
   disableLocalAutoRefresh: process.env.DISABLE_LOCAL_AUTO_REFRESH === 'true',
-  refreshSecret: process.env.REFRESH_SECRET || process.env.CRON_SECRET || '',
+  refreshSecret: process.env.REFRESH_SECRET || '',
+  cronSecret: process.env.CRON_SECRET || '',
   supabaseUrl: process.env.SUPABASE_URL || '',
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   tokenPrograms: [

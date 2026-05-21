@@ -59,15 +59,16 @@ export function isAuthorizedRefresh({
   refreshSecret?: string;
   vercelCron?: string;
 }) {
-  if (!config.refreshSecret) {
+  const allowedSecrets = [config.refreshSecret, config.cronSecret].filter(Boolean);
+  if (allowedSecrets.length === 0) {
     return false;
   }
 
   const bearerToken = authorization?.replace(/^Bearer\s+/i, '');
   return (
     vercelCron === '1' ||
-    bearerToken === config.refreshSecret ||
-    refreshSecret === config.refreshSecret
+    allowedSecrets.includes(bearerToken || '') ||
+    allowedSecrets.includes(refreshSecret || '')
   );
 }
 
