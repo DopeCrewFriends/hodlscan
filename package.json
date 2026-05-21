@@ -1,0 +1,44 @@
+{
+  "name": "hodlscan",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently \"tsx watch server/index.ts\" \"vite --host 0.0.0.0\"",
+    "dev:ui": "vite --host 0.0.0.0",
+    "build": "tsc && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "start": "NODE_ENV=production tsx server/index.ts",
+    "smoke": "tsx server/smoke.ts"
+  },
+  "dependencies": {
+    "@fontsource/geist-sans": "^5.2.5",
+    "@solana/web3.js": "^1.98.4",
+    "@supabase/supabase-js": "^2.106.1",
+    "bs58": "^6.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "geist": "^1.7.1",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "ws": "^8.20.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.1",
+    "@vercel/node": "^5.8.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3",
+    "vite": "^6.4.2"
+  }
+}
