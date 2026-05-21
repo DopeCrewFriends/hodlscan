@@ -5,6 +5,16 @@ const apiBase = import.meta.env.VITE_API_BASE_URL || '';
 const AUTO_REFRESH_SECONDS = 60;
 const DIAMOND_HANDS_IMAGE = '/assets/dhands.webp';
 const DIAMOND_HANDS_DAYS = 90;
+const percentFormatter = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 2,
+});
+const compactFormatter = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 2,
+});
+const wholeNumberFormatter = new Intl.NumberFormat('en-US');
+const dateFormatter = new Intl.DateTimeFormat(undefined);
 
 interface TokenInfo {
   mint: string;
@@ -94,6 +104,10 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function formatNumber(value: number, digits = 2) {
+  if (digits === 2) {
+    return percentFormatter.format(value);
+  }
+
   return new Intl.NumberFormat('en-US', {
     maximumFractionDigits: digits,
     minimumFractionDigits: digits,
@@ -101,10 +115,7 @@ function formatNumber(value: number, digits = 2) {
 }
 
 function formatCompact(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: 2,
-  }).format(value);
+  return compactFormatter.format(value);
 }
 
 function formatAge(days: number | null | undefined) {
@@ -144,6 +155,10 @@ function isDiamondHands(days: number | null | undefined) {
 
 function formatDistributionLabel(label: string) {
   return label.replace(/^top\b/i, 'Top');
+}
+
+function formatDate(value: string | null | undefined) {
+  return value ? dateFormatter.format(new Date(value)) : 'n/a';
 }
 
 function StatCard({
@@ -230,7 +245,7 @@ function HolderTimeline({
                       style={{ height: `${scaledHeight}%` }}
                     />
                     <span className="histogram-value">
-                      {point.holder_count.toLocaleString('en-US')}
+                      {wholeNumberFormatter.format(point.holder_count)}
                     </span>
                   </div>
                 );
@@ -532,9 +547,9 @@ function App() {
                 <span>{formatNumber(holder.pct_supply)}%</span>
                 <span>
                   {holder.historical_holding_since_at || holder.first_seen_at
-                    ? new Date(
-                        holder.historical_holding_since_at || holder.first_seen_at!,
-                      ).toLocaleDateString()
+                    ? formatDate(
+                        holder.historical_holding_since_at || holder.first_seen_at,
+                      )
                     : 'n/a'}
                 </span>
                 <span
