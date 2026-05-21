@@ -103,7 +103,13 @@ export function buildSnapshotResponse(
   }
 
   const now = Date.now();
-  const holderAges = metricHolders
+  const knownHistoricalAges = metricHolders
+    .map((holder) => {
+      const since = holder.historical_holding_since_at;
+      return since ? now - new Date(since).getTime() : 0;
+    })
+    .filter((age) => age > 0);
+  const allHolderAges = metricHolders
     .map((holder) => {
       const since =
         holder.historical_holding_since_at || holder.current_streak_started_at;
@@ -111,11 +117,13 @@ export function buildSnapshotResponse(
     })
     .filter((age) => age > 0);
   const averageHolderAgeDays =
-    holderAges.length > 0
-      ? holderAges.reduce((sum, age) => sum + age, 0) / holderAges.length / DAY_MS
+    knownHistoricalAges.length > 0
+      ? knownHistoricalAges.reduce((sum, age) => sum + age, 0) /
+        knownHistoricalAges.length /
+        DAY_MS
       : 0;
   const oldestHolderAgeDays =
-    holderAges.length > 0 ? Math.max(...holderAges) / DAY_MS : 0;
+    allHolderAges.length > 0 ? Math.max(...allHolderAges) / DAY_MS : 0;
   const getHolderAgeDays = (holder: SnapshotHolderRow) => {
     const since =
       holder.historical_holding_since_at || holder.current_streak_started_at;
