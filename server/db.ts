@@ -40,7 +40,45 @@ function getSupabase() {
 }
 
 export function initDb(): void {
-  // Supabase schema is managed by supabase/migrations/001_hodlscan_schema.sql.
+  // Supabase schema is managed by supabase/migrations/*.sql.
+}
+
+function isMissingHolderCountHistoryTable(error: { message: string }) {
+  return (
+    error.message.includes('holder_count_history') &&
+    (error.message.includes('schema cache') ||
+      error.message.includes('does not exist'))
+  );
+}
+
+async function getCurrentSnapshotForMint(
+  mint: string,
+): Promise<SnapshotRow | null> {
+  const { data, error } = await getSupabase()
+    .from('snapshots')
+    .select('*')
+    .eq('mint', mint)
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return (data as SnapshotRow | null) || null;
+}
+
+async function deleteOtherSnapshots(mint: string, keepSnapshotId: number) {
+  const { error } = await getSupabase()
+    .from('snapshots')
+    .delete()
+    .eq('mint', mint)
+    .neq('id', keepSnapshotId);
+
+  if (error) {
+    throw new Error(error.message);
+  }
 }
 
 interface SaveSnapshotInput {
@@ -275,29 +313,58 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
     (owner) => !currentOwners.has(owner),
   );
 
-  const { data: insertedSnapshot, error: snapshotError } = await getSupabase()
-    .from('snapshots')
-    .insert({
-      mint: input.mint,
-      slot: input.slot,
-      status: input.status,
-      holder_count: input.holders.length,
-      new_holder_count: newHolderCount,
-      dropped_holder_count: droppedOwners.length,
-      total_supply: input.totalSupply,
-      decimals: input.decimals,
-      scanned_at: now,
-      source: input.source,
-      error: input.error || null,
-    })
-    .select('*')
-    .single();
+  const existingSnapshot = await getCurrentSnapshotForMint(input.mint);
+  const snapshotPayload = {
+    mint: input.mint,
+    slot: input.slot,
+    status: input.status,
+    holder_count: input.holders.length,
+    new_holder_count: newHolderCount,
+    dropped_holder_count: droppedOwners.length,
+    total_supply: input.totalSupply,
+    decimals: input.decimals,
+    scanned_at: now,
+    source: input.source,
+    error: input.error || null,
+  };
 
-  if (snapshotError) {
-    throw new Error(snapshotError.message);
+  let snapshot: SnapshotRow;
+  if (existingSnapshot) {
+    const { data, error } = await getSupabase()
+      .from('snapshots')
+      .update(snapshotPayload)
+      .eq('id', existingSnapshot.id)
+      .select('*')
+      .single();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    snapshot = data as SnapshotRow;
+
+    const { error: deleteHoldersError } = await getSupabase()
+      .from('snapshot_holders')
+      .delete()
+      .eq('snapshot_id', snapshot.id);
+
+    if (deleteHoldersError) {
+      throw new Error(deleteHoldersError.message);
+    }
+  } else {
+    const { data, error } = await getSupabase()
+      .from('snapshots')
+      .insert(snapshotPayload)
+      .select('*')
+      .single();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    snapshot = data as SnapshotRow;
   }
 
-  const snapshot = insertedSnapshot as SnapshotRow;
   const snapshotId = snapshot.id;
 
   if (input.walletClassifications?.length) {
@@ -397,7 +464,34 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
     }
   }
 
+  await deleteOtherSnapshots(input.mint, snapshotId);
+
   return snapshot;
+}
+
+export async function appendHolderCountHistory({
+  mint,
+  holderCount,
+  scannedAt,
+}: {
+  mint: string;
+  holderCount: number;
+  scannedAt: string;
+}) {
+  const { error } = await getSupabase()
+    .from('holder_count_history')
+    .insert({
+      mint,
+      holder_count: holderCount,
+      scanned_at: scannedAt,
+    });
+
+  if (error) {
+    if (isMissingHolderCountHistoryTable(error)) {
+      return;
+    }
+    throw new Error(error.message);
+  }
 }
 
 export async function getSnapshotById(id: number): Promise<SnapshotRow> {
@@ -415,35 +509,7 @@ export async function getSnapshotById(id: number): Promise<SnapshotRow> {
 }
 
 export async function getLatestSnapshot(): Promise<SnapshotRow | null> {
-  const { data, error } = await getSupabase()
-    .from('snapshots')
-    .select('*')
-    .gt('holder_count', 0)
-    .order('id', { ascending: false })
-    .limit(25);
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  const snapshots = (data || []) as SnapshotRow[];
-  for (const snapshot of snapshots) {
-    const { data: holderRows, error: holderError } = await getSupabase()
-      .from('snapshot_holders')
-      .select('snapshot_id')
-      .eq('snapshot_id', snapshot.id)
-      .limit(1);
-
-    if (holderError) {
-      throw new Error(holderError.message);
-    }
-
-    if ((holderRows || []).length > 0) {
-      return snapshot;
-    }
-  }
-
-  return null;
+  return getCurrentSnapshotForMint(config.tokenMint);
 }
 
 export async function getSnapshotHolders(
@@ -461,6 +527,51 @@ export async function getSnapshotHolders(
   }
 
   return hydrateSnapshotHolders((data || []) as SnapshotHolderRecord[]);
+}
+
+export async function buildMetricHolders(
+  holders: AggregatedHolder[],
+  classifications: WalletClassification[],
+): Promise<SnapshotHolderRow[]> {
+  const states = await getWalletStates(holders.map((holder) => holder.owner));
+  const classByOwner = new Map(
+    classifications.map((classification) => [
+      classification.owner,
+      classification,
+    ]),
+  );
+
+  return holders.map((holder) => {
+    const state = states.get(holder.owner);
+    const classification = normalizeWalletClassification(
+      classByOwner.get(holder.owner),
+    );
+
+    return {
+      snapshot_id: 0,
+      owner: holder.owner,
+      token_account: holder.tokenAccount,
+      raw_amount: holder.rawAmount.toString(),
+      ui_amount: holder.uiAmount,
+      rank: holder.rank,
+      pct_supply: holder.pctSupply,
+      first_seen_at: state?.first_seen_at || null,
+      last_seen_at: state?.last_seen_at || null,
+      current_streak_started_at: state?.current_streak_started_at || null,
+      historical_holding_since_at:
+        holder.historicalHoldingSinceAt ||
+        state?.historical_holding_since_at ||
+        null,
+      historical_holding_source:
+        holder.historicalHoldingSource ||
+        state?.historical_holding_source ||
+        null,
+      wallet_type: classification.wallet_type,
+      classification_source: classification.classification_source,
+      classification_confidence: classification.classification_confidence,
+      exclude_from_holder_stats: classification.exclude_from_holder_stats,
+    };
+  });
 }
 
 export async function getAllSnapshotHolders(
@@ -540,48 +651,36 @@ export async function getHistoricalHoldingCache(
 }
 
 export async function getHistory(): Promise<HistoryRow[]> {
-  const snapshots = await fetchAll<SnapshotRow>((from, to) =>
-    getSupabase()
-      .from('snapshots')
-      .select('*')
-      .gt('holder_count', 0)
-      .order('id', { ascending: true })
-      .range(from, to),
-  );
-  if (snapshots.length === 0) {
-    return [];
-  }
+  try {
+    const rows = await fetchAll<{
+      id: number;
+      holder_count: number;
+      scanned_at: string;
+    }>((from, to) =>
+      getSupabase()
+        .from('holder_count_history')
+        .select('id, holder_count, scanned_at')
+        .eq('mint', config.tokenMint)
+        .order('scanned_at', { ascending: true })
+        .range(from, to),
+    );
 
-  const snapshotIds = snapshots.map((snapshot) => snapshot.id);
-  const metricRows: SnapshotMetricsRow[] = [];
-  for (const idChunk of chunk(snapshotIds, READ_IN_CHUNK_SIZE)) {
-    const { data, error } = await getSupabase()
-      .from('snapshot_metrics')
-      .select('*')
-      .in('snapshot_id', idChunk);
-
-    if (error) {
-      throw new Error(error.message);
+    return rows.map((row) => ({
+      id: row.id,
+      scanned_at: row.scanned_at,
+      holder_count: row.holder_count,
+      new_holder_count: 0,
+      dropped_holder_count: 0,
+      top_10_pct: 0,
+      top_20_pct: 0,
+      status: 'complete',
+      source: 'hodlscan',
+    }));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isMissingHolderCountHistoryTable({ message })) {
+      return [];
     }
-
-    metricRows.push(...((data || []) as SnapshotMetricsRow[]));
+    throw error instanceof Error ? error : new Error(message);
   }
-  const metricsBySnapshot = new Map(
-    metricRows.map((row) => [row.snapshot_id, row.metrics]),
-  );
-
-  return snapshots.map((snapshot) => {
-    const metrics = metricsBySnapshot.get(snapshot.id);
-    return {
-      id: snapshot.id,
-      scanned_at: snapshot.scanned_at,
-      holder_count: metrics?.holderCount || snapshot.holder_count,
-      new_holder_count: snapshot.new_holder_count,
-      dropped_holder_count: snapshot.dropped_holder_count,
-      top_10_pct: metrics?.top10Pct || 0,
-      top_20_pct: metrics?.top20Pct || 0,
-      status: snapshot.status,
-      source: snapshot.source,
-    };
-  });
 }

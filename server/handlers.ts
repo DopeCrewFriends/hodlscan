@@ -6,7 +6,8 @@ import {
 } from './analytics.js';
 import { config } from './config.js';
 import {
-  getAllSnapshotHolders,
+  appendHolderCountHistory,
+  buildMetricHolders,
   getHistory,
   getHistoricalHoldingCache,
   getLatestSnapshot,
@@ -107,8 +108,10 @@ export async function runSnapshotRefresh() {
     walletClassifications,
     error: scan.error,
   });
-  const snapshotHolders = await getSnapshotHolders(snapshot.id);
-  const metricHolders = await getAllSnapshotHolders(snapshot.id);
+  const metricHolders = await buildMetricHolders(
+    enrichedHolders,
+    walletClassifications,
+  );
   const metrics = buildDashboardMetrics(snapshot, metricHolders);
   const distribution = buildDistribution(metricHolders);
   await saveSnapshotMetrics({
@@ -116,6 +119,12 @@ export async function runSnapshotRefresh() {
     metrics,
     distribution,
   });
+  await appendHolderCountHistory({
+    mint: config.tokenMint,
+    holderCount: metrics.holderCount,
+    scannedAt: snapshot.scanned_at,
+  });
+  const snapshotHolders = await getSnapshotHolders(snapshot.id);
 
   return buildSnapshotResponse(snapshot, snapshotHolders, {
     snapshot_id: snapshot.id,
