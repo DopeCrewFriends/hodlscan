@@ -1826,9 +1826,17 @@ h1 {
 
   .timeline-panel .chart-filters {
     width: 100%;
-    flex-wrap: wrap;
-    justify-content: flex-start;
-    gap: 0.3rem;
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    gap: 0.25rem;
+  }
+
+  .timeline-panel .chart-filter {
+    flex: 1 1 0;
+    min-width: 0;
+    text-align: center;
+    padding: 0.32rem 0.2rem;
+    letter-spacing: 0;
   }
 
   .flex-card-button {
