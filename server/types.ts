@@ -1,4 +1,8 @@
-export type RpcEndpointName = 'quicknode' | 'helius';
+export type RpcEndpointName =
+  | 'quicknode'
+  | 'helius'
+  | 'helius-beta'
+  | 'helius-fast';
 
 export interface RpcEndpoint {
   name: RpcEndpointName;
@@ -71,6 +75,7 @@ export interface SnapshotHolderRow {
   classification_source: string | null;
   classification_confidence: number;
   exclude_from_holder_stats: boolean;
+  previous_rank: number | null;
 }
 
 export interface HistoryRow {
@@ -110,6 +115,29 @@ export interface DistributionBucket {
   holderCount: number;
   pctSupply: number;
   averageAgeDays: number;
+}
+
+export interface WalletPortfolioToken {
+  mint: string;
+  name: string | null;
+  symbol: string | null;
+  image: string | null;
+  decimals: number;
+  uiAmount: number;
+  priceUsd: number | null;
+  valueUsd: number | null;
+  isTracked: boolean;
+}
+
+export interface WalletPortfolio {
+  owner: string;
+  solBalance: number;
+  solValueUsd: number | null;
+  totalValueUsd: number;
+  tokenCount: number;
+  tokens: WalletPortfolioToken[];
+  fetchedAt: string;
+  cached: boolean;
 }
 
 export interface TokenMetadata {

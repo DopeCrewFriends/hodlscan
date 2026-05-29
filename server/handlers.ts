@@ -13,12 +13,16 @@ import {
   getLatestSnapshot,
   getSnapshotMetrics,
   getSnapshotHolders,
+  getWalletPortfolioCache,
+  isCurrentHolder,
   saveSnapshotMetrics,
   saveSnapshot,
+  saveWalletPortfolioCache,
 } from './db.js';
 import { attachHistoricalHoldingTimes } from './holder-history.js';
 import { scanTokenHolders } from './holders.js';
 import { getTokenMetadata } from './metadata.js';
+import { fetchWalletPortfolio } from './wallet-portfolio.js';
 import { classifyWalletOwners } from './wallet-classifier.js';
 
 export class HttpError extends Error {
@@ -51,6 +55,38 @@ export async function getHistoryResponse() {
   return { history: await getHistory() };
 }
 
+const SOLANA_ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+export async function getWalletPortfolioResponse(address?: string) {
+  const owner = (address || '').trim();
+  if (!owner || !SOLANA_ADDRESS_PATTERN.test(owner)) {
+    throw new HttpError(400, 'Invalid wallet address');
+  }
+
+  if (!(await isCurrentHolder(owner))) {
+    throw new HttpError(404, 'Wallet is not a tracked hodler');
+  }
+
+  const cached = await getWalletPortfolioCache(owner);
+  if (cached) {
+    const ageMs = Date.now() - new Date(cached.fetchedAt).getTime();
+    if (ageMs < config.walletPortfolioCacheTtlMs) {
+      return cached;
+    }
+  }
+
+  try {
+    const portfolio = await fetchWalletPortfolio(owner);
+    await saveWalletPortfolioCache(portfolio);
+    return portfolio;
+  } catch (error) {
+    if (cached) {
+      return cached;
+    }
+    throw error;
+  }
+}
+
 export function isAuthorizedRefresh({
   authorization,
   refreshSecret,
@@ -61,6 +97,10 @@ export function isAuthorizedRefresh({
   vercelCron?: string;
 }) {
   const allowedSecrets = [config.refreshSecret, config.cronSecret].filter(Boolean);
+  if (allowedSecrets.length === 0 && process.env.NODE_ENV !== 'production') {
+    return true;
+  }
+
   if (allowedSecrets.length === 0) {
     return false;
   }

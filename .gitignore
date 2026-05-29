@@ -6,7 +6,7 @@ data/*.sqlite
 data/*.sqlite-*
 .env
 .env.*
-.env.example
+!.env.example
 *.local
 *.log
 *:Zone.Identifier

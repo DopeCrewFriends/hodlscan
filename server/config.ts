@@ -16,6 +16,10 @@ const heliusUrl =
     ? `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`
     : '');
 
+export function isSupabaseConfigured() {
+  return Boolean(config.supabaseUrl && config.supabaseServiceRoleKey);
+}
+
 export const config = {
   rootDir,
   port: Number(process.env.PORT || 4077),
@@ -23,25 +27,37 @@ export const config = {
     process.env.TOKEN_MINT || 'Hh3oTaqDCKKfdBgsQEvxp9sUwyNf8x9qmKqEMLBWpump',
   rpcTimeoutMs: Number(process.env.RPC_TIMEOUT_MS || 30_000),
   rpcRetries: Number(process.env.RPC_RETRIES || 2),
-  maxDisplayHolders: Number(process.env.MAX_DISPLAY_HOLDERS || 250),
+  maxDisplayHolders: Number(process.env.MAX_DISPLAY_HOLDERS || 500),
+  walletPortfolioCacheTtlMs: Number(
+    process.env.WALLET_PORTFOLIO_CACHE_TTL_MS || 10 * 60_000,
+  ),
   autoRefreshMs: Number(process.env.AUTO_REFRESH_MS || 60_000),
   disableLocalAutoRefresh: process.env.DISABLE_LOCAL_AUTO_REFRESH === 'true',
   refreshSecret: process.env.REFRESH_SECRET || '',
   cronSecret: process.env.CRON_SECRET || '',
-  supabaseUrl: process.env.SUPABASE_URL || '',
+  supabaseUrl:
+    process.env.SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    '',
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   tokenPrograms: [
     'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
     'TokenzQdBNbLqP5VEvGdJJj4pRjEwRsgdtJrRKCfr',
   ],
   rpcEndpoints: [
+    heliusUrl ? { name: 'helius', url: heliusUrl } : null,
+    process.env.HELIUS_RPC_URL_BETA
+      ? { name: 'helius-beta', url: process.env.HELIUS_RPC_URL_BETA }
+      : null,
+    process.env.HELIUS_RPC_URL_FAST
+      ? { name: 'helius-fast', url: process.env.HELIUS_RPC_URL_FAST }
+      : null,
     process.env.QUICKNODE_RPC_URL
       ? {
           name: 'quicknode',
           url: process.env.QUICKNODE_RPC_URL,
         }
       : null,
-    heliusUrl ? { name: 'helius', url: heliusUrl } : null,
   ].filter(Boolean) as RpcEndpoint[],
 };
 

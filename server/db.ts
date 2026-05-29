@@ -1,7 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import WebSocket from 'ws';
 
-import { config } from './config.js';
+import { config, isSupabaseConfigured } from './config.js';
 import type {
   AggregatedHolder,
   DashboardMetrics,
@@ -11,6 +11,7 @@ import type {
   SnapshotMetricsRow,
   SnapshotRow,
   WalletClassification,
+  WalletPortfolio,
 } from './types.js';
 
 const PAGE_SIZE = 1000;
@@ -20,7 +21,7 @@ const WRITE_CHUNK_SIZE = 500;
 let supabase: SupabaseClient | null = null;
 
 function getSupabase() {
-  if (!config.supabaseUrl || !config.supabaseServiceRoleKey) {
+  if (!isSupabaseConfigured()) {
     throw new Error(
       'Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.',
     );
@@ -102,6 +103,7 @@ interface ExistingHolderState {
   peak_balance: string;
   historical_holding_since_at: string | null;
   historical_holding_source: string | null;
+  last_rank: number | null;
 }
 
 type SnapshotHolderRecord = Omit<
@@ -211,7 +213,7 @@ async function getWalletStates(
     const { data, error } = await getSupabase()
       .from('wallet_holder_state')
       .select(
-        'owner, first_seen_at, last_seen_at, current_streak_started_at, is_current_holder, peak_balance, historical_holding_since_at, historical_holding_source',
+        'owner, first_seen_at, last_seen_at, current_streak_started_at, is_current_holder, peak_balance, historical_holding_since_at, historical_holding_source, last_rank',
       )
       .in('owner', ownerChunk);
 
@@ -291,6 +293,7 @@ async function hydrateSnapshotHolders(
       exclude_from_holder_stats:
         classification.exclude_from_holder_stats ||
         DEFAULT_WALLET_CLASSIFICATION.exclude_from_holder_stats,
+      previous_rank: state?.last_rank ?? null,
     };
   });
 }
@@ -314,6 +317,21 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
   );
 
   const existingSnapshot = await getCurrentSnapshotForMint(input.mint);
+  let previousRankByOwner = new Map<string, number>();
+  if (existingSnapshot) {
+    const previousHolderRows = await fetchAll<{ owner: string; rank: number }>(
+      (from, to) =>
+        getSupabase()
+          .from('snapshot_holders')
+          .select('owner, rank')
+          .eq('snapshot_id', existingSnapshot.id)
+          .range(from, to),
+    );
+    previousRankByOwner = new Map(
+      previousHolderRows.map((row) => [row.owner, row.rank]),
+    );
+  }
+
   const snapshotPayload = {
     mint: input.mint,
     slot: input.slot,
@@ -385,17 +403,19 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
     }
   }
 
-  const snapshotHolders = input.holders.map((holder) => ({
-    snapshot_id: snapshotId,
-    owner: holder.owner,
-    token_account: holder.tokenAccount,
-    raw_amount: holder.rawAmount.toString(),
-    ui_amount: holder.uiAmount,
-    rank: holder.rank,
-    pct_supply: holder.pctSupply,
-    historical_holding_since_at: holder.historicalHoldingSinceAt || null,
-    historical_holding_source: holder.historicalHoldingSource || null,
-  }));
+  const snapshotHolders = input.holders
+    .slice(0, config.maxDisplayHolders)
+    .map((holder) => ({
+      snapshot_id: snapshotId,
+      owner: holder.owner,
+      token_account: holder.tokenAccount,
+      raw_amount: holder.rawAmount.toString(),
+      ui_amount: holder.uiAmount,
+      rank: holder.rank,
+      pct_supply: holder.pctSupply,
+      historical_holding_since_at: holder.historicalHoldingSinceAt || null,
+      historical_holding_source: holder.historicalHoldingSource || null,
+    }));
 
   for (const holderChunk of chunk(snapshotHolders, WRITE_CHUNK_SIZE)) {
     const { error } = await getSupabase()
@@ -451,6 +471,7 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
         existing?.historical_holding_source ||
         holder.historicalHoldingSource ||
         null,
+      last_rank: previousRankByOwner.get(holder.owner) ?? null,
     };
   });
 
@@ -495,6 +516,12 @@ export async function appendHolderCountHistory({
 }
 
 export async function getSnapshotById(id: number): Promise<SnapshotRow> {
+  if (!isSupabaseConfigured()) {
+    throw new Error(
+      'Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.',
+    );
+  }
+
   const { data, error } = await getSupabase()
     .from('snapshots')
     .select('*')
@@ -509,12 +536,20 @@ export async function getSnapshotById(id: number): Promise<SnapshotRow> {
 }
 
 export async function getLatestSnapshot(): Promise<SnapshotRow | null> {
+  if (!isSupabaseConfigured()) {
+    return null;
+  }
+
   return getCurrentSnapshotForMint(config.tokenMint);
 }
 
 export async function getSnapshotHolders(
   snapshotId: number,
 ): Promise<SnapshotHolderRow[]> {
+  if (!isSupabaseConfigured()) {
+    return [];
+  }
+
   const { data, error } = await getSupabase()
     .from('snapshot_holders')
     .select('*')
@@ -570,6 +605,7 @@ export async function buildMetricHolders(
       classification_source: classification.classification_source,
       classification_confidence: classification.classification_confidence,
       exclude_from_holder_stats: classification.exclude_from_holder_stats,
+      previous_rank: state?.last_rank ?? null,
     };
   });
 }
@@ -617,6 +653,10 @@ export async function saveSnapshotMetrics({
 export async function getSnapshotMetrics(
   snapshotId: number,
 ): Promise<SnapshotMetricsRow | null> {
+  if (!isSupabaseConfigured()) {
+    return null;
+  }
+
   const { data, error } = await getSupabase()
     .from('snapshot_metrics')
     .select('*')
@@ -650,7 +690,92 @@ export async function getHistoricalHoldingCache(
   );
 }
 
+export async function isCurrentHolder(owner: string): Promise<boolean> {
+  if (!isSupabaseConfigured()) {
+    return false;
+  }
+
+  const { data, error } = await getSupabase()
+    .from('wallet_holder_state')
+    .select('owner')
+    .eq('owner', owner)
+    .eq('is_current_holder', true)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return Boolean(data);
+}
+
+function isMissingWalletPortfolioCacheTable(error: { message: string }) {
+  return (
+    error.message.includes('wallet_portfolio_cache') &&
+    (error.message.includes('schema cache') ||
+      error.message.includes('does not exist'))
+  );
+}
+
+export async function getWalletPortfolioCache(
+  owner: string,
+): Promise<WalletPortfolio | null> {
+  if (!isSupabaseConfigured()) {
+    return null;
+  }
+
+  const { data, error } = await getSupabase()
+    .from('wallet_portfolio_cache')
+    .select('data, fetched_at')
+    .eq('owner', owner)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingWalletPortfolioCacheTable(error)) {
+      return null;
+    }
+    throw new Error(error.message);
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  const row = data as { data: WalletPortfolio; fetched_at: string };
+  return { ...row.data, fetchedAt: row.fetched_at, cached: true };
+}
+
+export async function saveWalletPortfolioCache(
+  portfolio: WalletPortfolio,
+): Promise<void> {
+  if (!isSupabaseConfigured()) {
+    return;
+  }
+
+  const { error } = await getSupabase()
+    .from('wallet_portfolio_cache')
+    .upsert(
+      {
+        owner: portfolio.owner,
+        data: { ...portfolio, cached: false },
+        fetched_at: portfolio.fetchedAt,
+      },
+      { onConflict: 'owner' },
+    );
+
+  if (error) {
+    if (isMissingWalletPortfolioCacheTable(error)) {
+      return;
+    }
+    throw new Error(error.message);
+  }
+}
+
 export async function getHistory(): Promise<HistoryRow[]> {
+  if (!isSupabaseConfigured()) {
+    return [];
+  }
+
   try {
     const rows = await fetchAll<{
       id: number;

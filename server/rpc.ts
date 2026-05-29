@@ -61,6 +61,10 @@ async function postRpc<T>(
       };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+      const isRateLimited = lastError.message.includes('HTTP 429');
+      if (isRateLimited) {
+        break;
+      }
       if (attempt < config.rpcRetries) {
         await sleep(350 * (attempt + 1));
       }

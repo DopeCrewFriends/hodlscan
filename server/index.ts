@@ -3,12 +3,13 @@ import path from 'node:path';
 import cors from 'cors';
 import express from 'express';
 
-import { config } from './config.js';
+import { config, isSupabaseConfigured } from './config.js';
 import { initDb } from './db.js';
 import {
   getHistoryResponse,
   getHoldersResponse,
   getTokenResponse,
+  getWalletPortfolioResponse,
   refreshSnapshotResponse,
   runSnapshotRefresh,
   serializeError,
@@ -30,6 +31,17 @@ app.get('/api/holders', async (_req, res) => {
 
 app.get('/api/history', async (_req, res) => {
   res.json(await getHistoryResponse());
+});
+
+app.get('/api/wallet', async (req, res) => {
+  try {
+    const address =
+      typeof req.query.address === 'string' ? req.query.address : undefined;
+    res.json(await getWalletPortfolioResponse(address));
+  } catch (error) {
+    const serialized = serializeError(error);
+    res.status(serialized.status).json(serialized.body);
+  }
 });
 
 app.post('/api/refresh', async (req, res) => {
@@ -87,9 +99,15 @@ app.listen(config.port, () => {
     }`,
   );
   if (!process.env.VERCEL && !config.disableLocalAutoRefresh) {
-    console.log(`local auto refresh every ${config.autoRefreshMs / 1000}s`);
-    setInterval(() => {
-      void runLocalAutoRefresh();
-    }, config.autoRefreshMs);
+    if (isSupabaseConfigured() && config.rpcEndpoints.length > 0) {
+      console.log(`local auto refresh every ${config.autoRefreshMs / 1000}s`);
+      setInterval(() => {
+        void runLocalAutoRefresh();
+      }, config.autoRefreshMs);
+    } else {
+      console.log(
+        'local auto refresh disabled: set Supabase and RPC env vars in .env',
+      );
+    }
   }
 });

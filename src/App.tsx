@@ -6,8 +6,9 @@ const AUTO_REFRESH_SECONDS = 60;
 const DIAMOND_HANDS_IMAGE = '/assets/dhands.webp';
 const DIAMOND_HANDS_DAYS = 90;
 const MAX_HISTOGRAM_BARS = 56;
+const HOLDERS_PAGE_SIZE = 100;
 const holderTimeFilters = [
-  { id: 'all', label: 'all holders' },
+  { id: 'all', label: 'all hodlers' },
   { id: 'under-1d', label: '< 1d', min: 0, max: 1 },
   { id: '1-7d', label: '1-7d', min: 1, max: 7 },
   { id: '7-30d', label: '7-30d', min: 7, max: 30 },
@@ -15,10 +16,10 @@ const holderTimeFilters = [
   { id: '90d-plus', label: '90d+', min: 90 },
 ] as const;
 const chartTimeFilters = [
-  { id: '1d', label: '1d', days: 1 },
-  { id: '7d', label: '7d', days: 7 },
-  { id: '30d', label: '30d', days: 30 },
-  { id: 'all', label: 'all', days: Number.POSITIVE_INFINITY },
+  { id: '1d', label: '1d', days: 1, maxBars: 48 },
+  { id: '7d', label: '7d', days: 7, maxBars: 96 },
+  { id: '30d', label: '30d', days: 30, maxBars: 160 },
+  { id: 'all', label: 'all', days: Number.POSITIVE_INFINITY, maxBars: 220 },
 ] as const;
 const percentFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
@@ -29,6 +30,17 @@ const compactFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
 const wholeNumberFormatter = new Intl.NumberFormat('en-US');
+const usdFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 2,
+});
+const usdCompactFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  notation: 'compact',
+  maximumFractionDigits: 2,
+});
 const dateFormatter = new Intl.DateTimeFormat(undefined);
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: 'medium',
@@ -48,6 +60,29 @@ interface TokenInfo {
     source: string;
     error?: string;
   };
+}
+
+interface WalletPortfolioToken {
+  mint: string;
+  name: string | null;
+  symbol: string | null;
+  image: string | null;
+  decimals: number;
+  uiAmount: number;
+  priceUsd: number | null;
+  valueUsd: number | null;
+  isTracked: boolean;
+}
+
+interface WalletPortfolio {
+  owner: string;
+  solBalance: number;
+  solValueUsd: number | null;
+  totalValueUsd: number;
+  tokenCount: number;
+  tokens: WalletPortfolioToken[];
+  fetchedAt: string;
+  cached: boolean;
 }
 
 interface Snapshot {
@@ -82,6 +117,7 @@ interface Holder {
   exclude_from_holder_stats: boolean;
   current_holder_age_days: number;
   holding_time_source: string;
+  previous_rank: number | null;
 }
 
 interface HolderResponse {
@@ -121,6 +157,12 @@ interface HistoryPoint {
 
 type HolderTimeFilterId = (typeof holderTimeFilters)[number]['id'];
 type ChartTimeFilterId = (typeof chartTimeFilters)[number]['id'];
+type HolderSortKey = 'rank' | 'balance' | 'supply' | 'first_seen' | 'holding';
+type SortDirection = 'asc' | 'desc';
+
+const SOLSCAN_TOKEN_URL = 'https://solscan.io/token/';
+const SOLSCAN_ACCOUNT_URL = 'https://solscan.io/account/';
+const PADRE_TERMINAL_URL = 'https://trade.padre.gg/rk/zil';
 
 function getRouteMint() {
   const match = window.location.pathname.match(/^\/coin\/([^/]+)\/?$/);
@@ -200,6 +242,58 @@ function formatWalletType(type: Holder['wallet_type']) {
     return 'LP';
   }
   return type;
+}
+
+function formatRankChange(
+  holder: Holder,
+  hasRankBaseline: boolean,
+): { label: string; tone: 'good' | 'bad' | 'neutral' } | null {
+  if (!hasRankBaseline) {
+    return null;
+  }
+
+  if (holder.previous_rank == null) {
+    return { label: 'new', tone: 'neutral' };
+  }
+
+  if (holder.previous_rank === holder.rank) {
+    return null;
+  }
+
+  const delta = holder.previous_rank - holder.rank;
+  if (delta > 0) {
+    return { label: `↑${delta}`, tone: 'good' };
+  }
+
+  return { label: `↓${Math.abs(delta)}`, tone: 'bad' };
+}
+
+function sortIndicator(
+  activeKey: HolderSortKey,
+  sortKey: HolderSortKey,
+  direction: SortDirection,
+) {
+  if (activeKey !== sortKey) {
+    return '';
+  }
+
+  return direction === 'asc' ? ' ↑' : ' ↓';
+}
+
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textarea);
 }
 
 function formatDistributionLabel(label: string) {
@@ -301,15 +395,11 @@ function StatCard({
 
 function HolderTimeline({
   history,
-  nextRefreshSeconds,
-  refreshing,
   nowMs,
   chartTimeFilter,
   onChartTimeFilterChange,
 }: {
   history: HistoryPoint[];
-  nextRefreshSeconds: number;
-  refreshing: boolean;
   nowMs: number;
   chartTimeFilter: ChartTimeFilterId;
   onChartTimeFilterChange: (filter: ChartTimeFilterId) => void;
@@ -325,7 +415,10 @@ function HolderTimeline({
           nowMs - activeChartFilter.days * 24 * 60 * 60 * 1000,
       )
     : plottedHistory;
-  const recentHistory = sampleHistoryPoints(filteredHistory, MAX_HISTOGRAM_BARS);
+  const recentHistory = sampleHistoryPoints(
+    filteredHistory,
+    activeChartFilter.maxBars ?? MAX_HISTOGRAM_BARS,
+  );
   const counts = recentHistory.map((point) => point.holder_count);
   const rawMin = counts.length ? Math.min(...counts) : 0;
   const rawMax = counts.length ? Math.max(...counts) : 1;
@@ -334,13 +427,40 @@ function HolderTimeline({
   const scaleMin = Math.max(0, rawMin - padding);
   const scaleMax = rawMax + padding;
   const scaleRange = Math.max(scaleMax - scaleMin, 1);
+  const latestPoint = recentHistory.at(-1);
+  const periodStart = recentHistory[0];
+  const periodDelta =
+    latestPoint && periodStart
+      ? latestPoint.holder_count - periodStart.holder_count
+      : 0;
 
   return (
     <section className="panel timeline-panel">
       <div className="panel-title">
-        <span>holder count</span>
+        <div className="panel-title-main">
+          <span>Hodler count</span>
+          {latestPoint ? (
+            <span className="histogram-summary">
+              <strong>{wholeNumberFormatter.format(latestPoint.holder_count)}</strong>
+              {recentHistory.length > 1 ? (
+                <span
+                  className={
+                    periodDelta > 0
+                      ? 'histogram-summary-delta histogram-summary-delta-up'
+                      : periodDelta < 0
+                        ? 'histogram-summary-delta histogram-summary-delta-down'
+                        : 'histogram-summary-delta'
+                  }
+                >
+                  {periodDelta >= 0 ? '+' : ''}
+                  {periodDelta}
+                </span>
+              ) : null}
+            </span>
+          ) : null}
+        </div>
         <div className="panel-title-actions">
-          <div className="chart-filters" aria-label="Holder count time filters">
+          <div className="chart-filters" aria-label="Hodler count time filters">
             {chartTimeFilters.map((filter) => (
               <button
                 className={
@@ -356,29 +476,34 @@ function HolderTimeline({
               </button>
             ))}
           </div>
-          <small>
-            {refreshing
-              ? 'syncing now'
-              : `updates in ${nextRefreshSeconds}s`}
-          </small>
         </div>
       </div>
       <div className="histogram">
         {plottedHistory.length === 0 ? (
-          <div className="empty-state">waiting for holder count data</div>
+          <div className="empty-state">waiting for hodler count data</div>
         ) : (
-          <div className="histogram-bars">
+          <div className="histogram-chart">
+            <div className="histogram-scale" aria-hidden="true">
+              <span>{wholeNumberFormatter.format(Math.round(scaleMax))}</span>
+              <span>{wholeNumberFormatter.format(Math.round(scaleMin))}</span>
+            </div>
+            <div className="histogram-bars">
             {recentHistory.map((point, index) => {
                 const previous = recentHistory[index - 1];
                 const delta = previous
                   ? point.holder_count - previous.holder_count
                   : 0;
                 const scaledHeight =
-                  10 + ((point.holder_count - scaleMin) / scaleRange) * 90;
+                  8 + ((point.holder_count - scaleMin) / scaleRange) * 92;
+                const isLatest = index === recentHistory.length - 1;
 
                 return (
                   <div
-                    className="histogram-bar"
+                    className={
+                      isLatest
+                        ? 'histogram-bar histogram-bar-latest'
+                        : 'histogram-bar'
+                    }
                     key={point.id}
                   >
                     <div
@@ -397,7 +522,15 @@ function HolderTimeline({
                         {' · '}
                         {formatDateTime(point.scanned_at)}
                       </span>
-                      <span>
+                      <span
+                        className={
+                          delta > 0
+                            ? 'histogram-value-delta-up'
+                            : delta < 0
+                              ? 'histogram-value-delta-down'
+                              : undefined
+                        }
+                      >
                         {delta >= 0 ? '+' : ''}
                         {delta} · {formatRelativeTime(point.scanned_at, nowMs)}
                       </span>
@@ -405,6 +538,7 @@ function HolderTimeline({
                   </div>
                 );
             })}
+            </div>
           </div>
         )}
       </div>
@@ -417,17 +551,27 @@ function App() {
   const [holderData, setHolderData] = useState<HolderResponse | null>(null);
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [nextRefreshSeconds, setNextRefreshSeconds] =
-    useState(AUTO_REFRESH_SECONDS);
   const [lastSyncAtMs, setLastSyncAtMs] = useState(Date.now());
   const [nowMs, setNowMs] = useState(Date.now());
   const [holderTimeFilter, setHolderTimeFilter] =
     useState<HolderTimeFilterId>('all');
+  const [holderPage, setHolderPage] = useState(1);
+  const [holderSort, setHolderSort] = useState<{
+    key: HolderSortKey;
+    direction: SortDirection;
+  }>({ key: 'rank', direction: 'asc' });
   const [chartTimeFilter, setChartTimeFilter] =
     useState<ChartTimeFilterId>('1d');
+  const [copiedMint, setCopiedMint] = useState(false);
+  const [copiedWallet, setCopiedWallet] = useState(false);
   const [routeMint, setRouteMint] = useState(() => getRouteMint());
   const [routeWallet, setRouteWallet] = useState(() => getRouteWallet());
+  const [walletPortfolio, setWalletPortfolio] =
+    useState<WalletPortfolio | null>(null);
+  const [walletPortfolioLoading, setWalletPortfolioLoading] = useState(false);
+  const [walletPortfolioError, setWalletPortfolioError] = useState<string | null>(
+    null,
+  );
   const [searchValue, setSearchValue] = useState(() => getRouteMint() || '');
   const [error, setError] = useState<string | null>(null);
   const refreshingRef = useRef(false);
@@ -458,10 +602,6 @@ function App() {
   }, [loading]);
 
   useEffect(() => {
-    refreshingRef.current = refreshing;
-  }, [refreshing]);
-
-  useEffect(() => {
     function handlePopState() {
       setRouteMint(getRouteMint());
       setRouteWallet(getRouteWallet());
@@ -486,10 +626,6 @@ function App() {
     }
 
     refreshingRef.current = true;
-    setRefreshing(true);
-    if (!silent) {
-      setError(null);
-    }
 
     try {
       const [holdersResponse, historyResponse] = await Promise.all([
@@ -498,9 +634,7 @@ function App() {
       ]);
       setHolderData(holdersResponse);
       setHistory(historyResponse.history);
-      const syncedAt = Date.now();
-      setLastSyncAtMs(syncedAt);
-      setNextRefreshSeconds(AUTO_REFRESH_SECONDS);
+      setLastSyncAtMs(Date.now());
     } catch (syncError) {
       const message =
         syncError instanceof Error ? syncError.message : String(syncError);
@@ -511,7 +645,6 @@ function App() {
       }
     } finally {
       refreshingRef.current = false;
-      setRefreshing(false);
     }
   }
 
@@ -519,17 +652,51 @@ function App() {
   const showingWalletProfile = Boolean(routeWallet);
 
   useEffect(() => {
+    if (!routeWallet) {
+      setWalletPortfolio(null);
+      setWalletPortfolioError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setWalletPortfolio(null);
+    setWalletPortfolioError(null);
+    setWalletPortfolioLoading(true);
+    fetchJson<WalletPortfolio>(
+      `/api/wallet?address=${encodeURIComponent(routeWallet)}`,
+    )
+      .then((portfolio) => {
+        if (!cancelled) {
+          setWalletPortfolio(portfolio);
+        }
+      })
+      .catch((portfolioError) => {
+        if (!cancelled) {
+          setWalletPortfolioError(
+            portfolioError instanceof Error
+              ? portfolioError.message
+              : String(portfolioError),
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setWalletPortfolioLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [routeWallet]);
+
+  useEffect(() => {
     if (showingMissingToken || showingWalletProfile) {
       return undefined;
     }
 
-    const countdown = window.setInterval(() => {
-      const currentNowMs = Date.now();
-      setNowMs(currentNowMs);
-      const elapsedSeconds = Math.floor((currentNowMs - lastSyncAtMs) / 1000);
-      setNextRefreshSeconds(
-        AUTO_REFRESH_SECONDS - (elapsedSeconds % AUTO_REFRESH_SECONDS),
-      );
+    const clock = window.setInterval(() => {
+      setNowMs(Date.now());
     }, 1000);
 
     const syncTimer = window.setInterval(() => {
@@ -537,7 +704,7 @@ function App() {
     }, AUTO_REFRESH_SECONDS * 1000);
 
     return () => {
-      window.clearInterval(countdown);
+      window.clearInterval(clock);
       window.clearInterval(syncTimer);
     };
   }, [lastSyncAtMs, showingMissingToken, showingWalletProfile]);
@@ -595,6 +762,71 @@ function App() {
       ) || [],
     [holderData, holderTimeFilter],
   );
+  const sortedHolders = useMemo(() => {
+    const sorted = [...filteredHolders];
+    sorted.sort((left, right) => {
+      let comparison = 0;
+
+      switch (holderSort.key) {
+        case 'rank':
+          comparison = left.rank - right.rank;
+          break;
+        case 'balance':
+          comparison = left.ui_amount - right.ui_amount;
+          break;
+        case 'supply':
+          comparison = left.pct_supply - right.pct_supply;
+          break;
+        case 'holding':
+          comparison =
+            left.current_holder_age_days - right.current_holder_age_days;
+          break;
+        case 'first_seen': {
+          const leftDate =
+            left.historical_holding_since_at || left.first_seen_at || '';
+          const rightDate =
+            right.historical_holding_since_at || right.first_seen_at || '';
+          comparison = leftDate.localeCompare(rightDate);
+          break;
+        }
+        default:
+          comparison = 0;
+      }
+
+      if (comparison === 0) {
+        comparison = left.rank - right.rank;
+      }
+
+      return holderSort.direction === 'asc' ? comparison : -comparison;
+    });
+
+    return sorted;
+  }, [filteredHolders, holderSort]);
+  const hasRankBaseline = useMemo(
+    () =>
+      holderData?.holders.some(
+        (holder) => holder.previous_rank != null,
+      ) || false,
+    [holderData],
+  );
+  const holderPageCount = Math.max(
+    1,
+    Math.ceil(sortedHolders.length / HOLDERS_PAGE_SIZE),
+  );
+  const paginatedHolders = useMemo(() => {
+    const start = (holderPage - 1) * HOLDERS_PAGE_SIZE;
+    return sortedHolders.slice(start, start + HOLDERS_PAGE_SIZE);
+  }, [sortedHolders, holderPage]);
+
+  useEffect(() => {
+    setHolderPage(1);
+  }, [holderTimeFilter, holderSort]);
+
+  useEffect(() => {
+    if (holderPage > holderPageCount) {
+      setHolderPage(holderPageCount);
+    }
+  }, [holderPage, holderPageCount]);
   const holderFilterCounts = useMemo(() => {
     const holders = holderData?.holders || [];
     return new Map(
@@ -644,6 +876,37 @@ function App() {
     }
   }
 
+  function toggleHolderSort(key: HolderSortKey) {
+    setHolderSort((current) =>
+      current.key === key
+        ? {
+            key,
+            direction: current.direction === 'asc' ? 'desc' : 'asc',
+          }
+        : { key, direction: key === 'rank' ? 'asc' : 'desc' },
+    );
+  }
+
+  async function handleCopyMint() {
+    if (!token?.mint) {
+      return;
+    }
+
+    await copyText(token.mint);
+    setCopiedMint(true);
+    window.setTimeout(() => setCopiedMint(false), 1600);
+  }
+
+  async function handleCopyWallet() {
+    if (!routeWallet) {
+      return;
+    }
+
+    await copyText(routeWallet);
+    setCopiedWallet(true);
+    window.setTimeout(() => setCopiedWallet(false), 1600);
+  }
+
   return (
     <main className="terminal-shell">
       <nav className="app-nav panel" aria-label="Hodlscan">
@@ -653,7 +916,8 @@ function App() {
             type="button"
             onClick={handleBrandClick}
           >
-            hodlscan
+            <span className="app-brand-word">HODL</span>
+            <span className="app-brand-word app-brand-word-accent">SCAN</span>
           </button>
           <form className="token-search" role="search" onSubmit={handleSearchSubmit}>
             <label htmlFor="token-search" className="sr-only">
@@ -674,60 +938,186 @@ function App() {
       {showingWalletProfile ? (
         <section className="wallet-profile-page">
           <section className="wallet-profile-card panel">
-            <div>
-              <span className="kicker">wallet profile</span>
+            <div className="wallet-profile-identity">
+              <span className="kicker">
+                ${token?.metadata.symbol || 'HODL'} hodler
+              </span>
               <h1>{routeWallet ? shortAddress(routeWallet) : 'wallet'}</h1>
-              <div className="token-subtitle">
-                <span>{routeWallet}</span>
+              <div className="wallet-profile-address">
+                <button
+                  type="button"
+                  className="wallet-profile-address-pill"
+                  title={copiedWallet ? 'Copied' : 'Copy address'}
+                  onClick={() => void handleCopyWallet()}
+                >
+                  {copiedWallet ? 'copied' : routeWallet}
+                </button>
+                {routeWallet ? (
+                  <a
+                    className="wallet-solscan-link"
+                    href={`${SOLSCAN_ACCOUNT_URL}${routeWallet}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="View wallet on Solscan"
+                    aria-label="View wallet on Solscan"
+                  >
+                    <img src="/assets/solscan-icon.png" alt="" aria-hidden="true" />
+                  </a>
+                ) : null}
+                {walletProfileHolder &&
+                walletProfileHolder.wallet_type !== 'wallet' ? (
+                  <span className="wallet-profile-type-badge">
+                    {formatWalletType(walletProfileHolder.wallet_type)}
+                  </span>
+                ) : null}
               </div>
             </div>
-            <div className="wallet-profile-grid">
-              <StatCard
-                label="rank"
-                value={walletProfileHolder ? `#${walletProfileHolder.rank}` : 'n/a'}
-                compact
-              />
-              <StatCard
-                label="balance"
-                value={walletProfileHolder ? formatCompact(walletProfileHolder.ui_amount) : 'n/a'}
-                compact
-              />
-              <StatCard
-                label="supply"
-                value={
-                  walletProfileHolder
-                    ? `${formatNumber(walletProfileHolder.pct_supply)}%`
-                    : 'n/a'
-                }
-                compact
-              />
-              <StatCard
-                label="holding"
-                value={
-                  walletProfileHolder
-                    ? formatAge(walletProfileHolder.current_holder_age_days)
-                    : 'n/a'
-                }
-                compact
-              />
-              <StatCard
-                label="type"
-                value={
-                  walletProfileHolder
-                    ? formatWalletType(walletProfileHolder.wallet_type)
-                    : 'unknown'
-                }
-                compact
-              />
+            <div className="wallet-profile-position">
+              <span className="wallet-profile-position-label">
+                ${token?.metadata.symbol || 'HODL'} position
+              </span>
+              <div className="wallet-profile-position-stats">
+                <div className="wallet-profile-position-stat">
+                  <small>rank</small>
+                  <strong>
+                    {walletProfileHolder ? `#${walletProfileHolder.rank}` : 'n/a'}
+                  </strong>
+                </div>
+                <div className="wallet-profile-position-stat">
+                  <small>balance</small>
+                  <strong>
+                    {walletProfileHolder
+                      ? formatCompact(walletProfileHolder.ui_amount)
+                      : 'n/a'}
+                  </strong>
+                </div>
+                <div className="wallet-profile-position-stat">
+                  <small>supply</small>
+                  <strong>
+                    {walletProfileHolder
+                      ? `${formatNumber(walletProfileHolder.pct_supply)}%`
+                      : 'n/a'}
+                  </strong>
+                </div>
+                <div className="wallet-profile-position-stat">
+                  <small>hodl time</small>
+                  <strong>
+                    {walletProfileHolder
+                      ? formatAge(walletProfileHolder.current_holder_age_days)
+                      : 'n/a'}
+                  </strong>
+                </div>
+              </div>
             </div>
           </section>
-          <section className="wallet-profile-placeholder panel">
-            <div className="panel-title">
-              <span>profile foundation</span>
+          <section className="wallet-portfolio panel">
+            <div className="panel-title wallet-portfolio-title">
+              <span>portfolio</span>
+              {walletPortfolio ? (
+                <small className="wallet-portfolio-total">
+                  {usdFormatter.format(walletPortfolio.totalValueUsd)}
+                </small>
+              ) : null}
             </div>
-            <p>
-              Basic wallet route is ready. More wallet intelligence will plug in here.
-            </p>
+            {walletPortfolioLoading ? (
+              <p className="wallet-portfolio-status">loading portfolio…</p>
+            ) : walletPortfolioError ? (
+              <p className="wallet-portfolio-status">
+                couldn't load portfolio: {walletPortfolioError}
+              </p>
+            ) : walletPortfolio ? (
+              <>
+                <div className="wallet-portfolio-summary">
+                  <div className="wallet-portfolio-stat">
+                    <small>total value</small>
+                    <strong>
+                      {usdFormatter.format(walletPortfolio.totalValueUsd)}
+                    </strong>
+                  </div>
+                  <div className="wallet-portfolio-stat">
+                    <small>tokens</small>
+                    <strong>
+                      {wholeNumberFormatter.format(walletPortfolio.tokenCount)}
+                    </strong>
+                  </div>
+                  <div className="wallet-portfolio-stat">
+                    <small>SOL</small>
+                    <strong>{formatNumber(walletPortfolio.solBalance, 3)}</strong>
+                  </div>
+                </div>
+                {walletPortfolio.tokens.length ? (
+                  <div className="wallet-portfolio-table">
+                    <div className="wallet-portfolio-head">
+                      <span>token</span>
+                      <span>balance</span>
+                      <span>price</span>
+                      <span>value</span>
+                    </div>
+                    {walletPortfolio.tokens.map((portfolioToken) => (
+                      <div
+                        className={
+                          portfolioToken.isTracked
+                            ? 'wallet-portfolio-row wallet-portfolio-row-tracked'
+                            : 'wallet-portfolio-row'
+                        }
+                        key={portfolioToken.mint}
+                      >
+                        <span className="wallet-portfolio-token">
+                          <span className="wallet-portfolio-image">
+                            {portfolioToken.image ? (
+                              <img
+                                src={portfolioToken.image}
+                                alt=""
+                                loading="lazy"
+                                onError={(event) => {
+                                  event.currentTarget.style.display = 'none';
+                                }}
+                              />
+                            ) : (
+                              <span className="wallet-portfolio-image-fallback">
+                                {(portfolioToken.symbol || '?').slice(0, 2)}
+                              </span>
+                            )}
+                          </span>
+                          <span className="wallet-portfolio-token-meta">
+                            <a
+                              className="wallet-portfolio-symbol"
+                              href={`${SOLSCAN_TOKEN_URL}${portfolioToken.mint}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={portfolioToken.name || portfolioToken.mint}
+                            >
+                              {portfolioToken.symbol ||
+                                shortAddress(portfolioToken.mint)}
+                            </a>
+                            {portfolioToken.name ? (
+                              <small>{portfolioToken.name}</small>
+                            ) : null}
+                          </span>
+                        </span>
+                        <span>{formatCompact(portfolioToken.uiAmount)}</span>
+                        <span>
+                          {portfolioToken.priceUsd != null
+                            ? usdCompactFormatter.format(portfolioToken.priceUsd)
+                            : '—'}
+                        </span>
+                        <span className="wallet-portfolio-value">
+                          {portfolioToken.valueUsd != null
+                            ? usdFormatter.format(portfolioToken.valueUsd)
+                            : '—'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="wallet-portfolio-status">
+                    no fungible tokens found for this wallet.
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="wallet-portfolio-status">portfolio unavailable.</p>
+            )}
           </section>
         </section>
       ) : showingMissingToken ? (
@@ -772,7 +1162,7 @@ function App() {
                 </span>
                 <span className="available-coin-stats">
                   <span>
-                    <small>holders</small>
+                    <small>hodlers</small>
                     <strong>{metrics ? wholeNumberFormatter.format(metrics.holderCount) : '0'}</strong>
                   </span>
                   <span>
@@ -808,21 +1198,64 @@ function App() {
           </div>
           <div>
             <h1>
-              {token?.metadata.name || token?.metadata.symbol || 'loading mint'}
+              {token?.metadata.name || token?.metadata.symbol || 'Loading mint'}
+              {token?.metadata.symbol ? (
+                <span className="token-title-ticker">
+                  {' '}
+                  -{' '}
+                  <span className="token-title-symbol">
+                    ${token.metadata.symbol}
+                  </span>
+                </span>
+              ) : null}
             </h1>
             <div className="token-subtitle">
-              <span>{token ? shortAddress(token.mint) : 'loading'}</span>
-              {token?.metadata.symbol ? <span>${token.metadata.symbol}</span> : null}
+              {token?.mint ? (
+                <button
+                  className="token-mint-pill"
+                  type="button"
+                  title={copiedMint ? 'Copied' : token.mint}
+                  onClick={() => void handleCopyMint()}
+                >
+                  {copiedMint ? 'Copied' : shortAddress(token.mint)}
+                </button>
+              ) : (
+                <span className="token-mint-pill token-mint-pill-static">loading</span>
+              )}
+              {token?.mint ? (
+                <>
+                  <a
+                    className="token-explorer-link"
+                    href={`${SOLSCAN_TOKEN_URL}${token.mint}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="View on Solscan"
+                    aria-label="View on Solscan"
+                  >
+                    <img src="/assets/solscan-icon.png" alt="" aria-hidden="true" />
+                  </a>
+                  <a
+                    className="token-explorer-link token-explorer-link-terminal"
+                    href={PADRE_TERMINAL_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="Trade on Terminal"
+                    aria-label="Trade on Terminal"
+                  >
+                    <img src="/assets/terminal.png" alt="" aria-hidden="true" />
+                  </a>
+                </>
+              ) : null}
             </div>
           </div>
         </div>
         <section className="top-stats-grid">
           <StatCard
-            label="total holders"
-            value={metrics ? String(metrics.holderCount) : '0'}
+            label="Total hodlers"
+            value={metrics ? wholeNumberFormatter.format(metrics.holderCount) : '0'}
           />
           <StatCard
-            label="total supply"
+            label="Total supply"
             value={formatCompact(supply)}
           />
           <StatCard
@@ -834,7 +1267,7 @@ function App() {
                   alt=""
                   aria-hidden="true"
                 />
-                <span>diamond hands</span>
+                <span>Diamond hands</span>
               </>
             }
             value={`${formatNumber(diamondHandsPct)}%`}
@@ -846,7 +1279,7 @@ function App() {
             )}
           />
           <StatCard
-            label="avg holder time"
+            label="Avg hodler time"
             value={formatAge(metrics?.averageHolderAgeDays || 0)}
             valueStyle={ageGradientStyle(
               metrics?.averageHolderAgeDays,
@@ -856,7 +1289,7 @@ function App() {
             compact
           />
           <StatCard
-            label="oldest current"
+            label="Oldest current"
             value={formatAge(oldestCurrentAgeDays)}
             valueStyle={ageGradientStyle(
               oldestCurrentAgeDays,
@@ -872,23 +1305,21 @@ function App() {
       <section className="content-grid">
         <HolderTimeline
           history={history}
-          nextRefreshSeconds={nextRefreshSeconds}
-          refreshing={refreshing}
           nowMs={nowMs}
           chartTimeFilter={chartTimeFilter}
           onChartTimeFilterChange={setChartTimeFilter}
         />
         <section className="panel distribution-panel">
           <div className="panel-title">
-            <span>distribution</span>
+            <span>Distribution</span>
           </div>
           <div className="distribution-list">
             {holderData?.distribution.length ? (
               <>
                 <div className="distribution-row distribution-head">
-                  <span>bracket</span>
-                  <span>supply</span>
-                  <span>avg age</span>
+                  <span>Bracket</span>
+                  <span>Supply</span>
+                  <span>Avg age</span>
                 </div>
                 {holderData.distribution.map((bucket) => (
                   <div className="distribution-row" key={bucket.label}>
@@ -916,9 +1347,9 @@ function App() {
 
       <section className="panel table-panel">
         <div className="panel-title">
-          <span>holders</span>
+          <span>Hodlers</span>
           <div className="panel-title-actions">
-            <div className="holder-filters" aria-label="Holder time filters">
+            <div className="holder-filters" aria-label="Hodler time filters">
               {holderTimeFilters.map((filter) => (
                 <button
                   className={
@@ -928,40 +1359,89 @@ function App() {
                   }
                   key={filter.id}
                   type="button"
-                  onClick={() => setHolderTimeFilter(filter.id)}
+                  onClick={() => {
+                    setHolderTimeFilter(filter.id);
+                    setHolderPage(1);
+                  }}
                 >
                   <span>{filter.label}</span>
                   <small>{holderFilterCounts.get(filter.id) || 0}</small>
                 </button>
               ))}
             </div>
-            <small>
-              {snapshot?.scanned_at
-                ? `updated ${formatRelativeTime(snapshot.scanned_at, nowMs)}`
-                : 'no scan yet'}
-            </small>
           </div>
         </div>
         <div className="holder-table">
           <div className="table-row table-head">
-            <span>rank</span>
-            <span>wallet</span>
-            <span>balance</span>
-            <span>supply</span>
-            <span>first seen</span>
-            <span>holding</span>
+            <button
+              className="table-sort-button"
+              type="button"
+              onClick={() => toggleHolderSort('rank')}
+            >
+              Rank{sortIndicator(holderSort.key, 'rank', holderSort.direction)}
+            </button>
+            <span>Wallet</span>
+            <button
+              className="table-sort-button"
+              type="button"
+              onClick={() => toggleHolderSort('balance')}
+            >
+              Balance
+              {sortIndicator(holderSort.key, 'balance', holderSort.direction)}
+            </button>
+            <button
+              className="table-sort-button"
+              type="button"
+              onClick={() => toggleHolderSort('supply')}
+            >
+              Supply
+              {sortIndicator(holderSort.key, 'supply', holderSort.direction)}
+            </button>
+            <button
+              className="table-sort-button"
+              type="button"
+              onClick={() => toggleHolderSort('first_seen')}
+            >
+              First seen
+              {sortIndicator(holderSort.key, 'first_seen', holderSort.direction)}
+            </button>
+            <button
+              className="table-sort-button"
+              type="button"
+              onClick={() => toggleHolderSort('holding')}
+            >
+              Holding
+              {sortIndicator(holderSort.key, 'holding', holderSort.direction)}
+            </button>
           </div>
-          {filteredHolders.length ? (
-            filteredHolders.map((holder) => (
+          {paginatedHolders.length ? (
+            paginatedHolders.map((holder) => {
+              const rankChange = formatRankChange(holder, hasRankBaseline);
+
+              return (
               <div
                 className={
                   isExcludedHolder(holder)
-                    ? 'table-row holder-row-excluded'
-                    : 'table-row'
+                    ? 'table-row holder-row holder-row-excluded'
+                    : 'table-row holder-row'
                 }
                 key={holder.owner}
               >
-                <span>#{holder.rank}</span>
+                <span className="rank-cell">
+                  <span>#{holder.rank}</span>
+                  {rankChange ? (
+                    <span
+                      className={`rank-change rank-change-${rankChange.tone}`}
+                      title={
+                        rankChange.tone === 'neutral'
+                          ? 'New in top hodlers'
+                          : 'Rank change since last scan'
+                      }
+                    >
+                      {rankChange.label}
+                    </span>
+                  ) : null}
+                </span>
                 <span className="wallet-cell">
                   <button
                     className="wallet-link"
@@ -971,6 +1451,17 @@ function App() {
                   >
                     {shortAddress(holder.owner)}
                   </button>
+                  <a
+                    className="wallet-solscan-link"
+                    href={`${SOLSCAN_ACCOUNT_URL}${holder.owner}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="View wallet on Solscan"
+                    aria-label="View wallet on Solscan"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <img src="/assets/solscan-icon.png" alt="" aria-hidden="true" />
+                  </a>
                   {holder.wallet_type !== 'wallet' ? (
                     <span
                       className={
@@ -1007,7 +1498,7 @@ function App() {
                       className="diamond-hands-badge"
                       src={DIAMOND_HANDS_IMAGE}
                       alt="diamond hands"
-                      title={`${DIAMOND_HANDS_DAYS}+ day holder`}
+                      title={`${DIAMOND_HANDS_DAYS}+ day hodler`}
                       onError={(event) => {
                         event.currentTarget.style.display = 'none';
                       }}
@@ -1015,15 +1506,61 @@ function App() {
                   ) : null}
                 </span>
               </div>
-            ))
+            );
+            })
           ) : (
             <div className="empty-state table-empty">
               {holderData?.holders.length
-                ? 'no holders match this time filter.'
-                : 'no holders cached yet. run refresh to scan the configured mint.'}
+                ? 'no hodlers match this time filter.'
+                : 'no hodlers cached yet. run refresh to scan the configured mint.'}
             </div>
           )}
         </div>
+        {sortedHolders.length > HOLDERS_PAGE_SIZE ? (
+          <div className="holder-pagination" aria-label="Hodler table pagination">
+            <button
+              className="pagination-button"
+              type="button"
+              disabled={holderPage <= 1}
+              onClick={() => setHolderPage((page) => Math.max(1, page - 1))}
+            >
+              previous
+            </button>
+            <div className="pagination-pages">
+              {Array.from({ length: holderPageCount }, (_, index) => {
+                const pageNumber = index + 1;
+                return (
+                  <button
+                    className={
+                      pageNumber === holderPage
+                        ? 'pagination-page pagination-page-active'
+                        : 'pagination-page'
+                    }
+                    key={pageNumber}
+                    type="button"
+                    onClick={() => setHolderPage(pageNumber)}
+                  >
+                    {pageNumber}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              className="pagination-button"
+              type="button"
+              disabled={holderPage >= holderPageCount}
+              onClick={() =>
+                setHolderPage((page) => Math.min(holderPageCount, page + 1))
+              }
+            >
+              next
+            </button>
+            <small className="pagination-meta">
+              {sortedHolders.length.toLocaleString()} hodlers · page {holderPage}{' '}
+              of {holderPageCount}
+            </small>
+          </div>
+        ) : null}
       </section>
         </>
       )}

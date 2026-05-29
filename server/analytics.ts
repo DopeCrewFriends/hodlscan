@@ -66,6 +66,7 @@ export function buildDistribution(holders: SnapshotHolderRow[]): DistributionBuc
     { label: 'Top 50', to: 50 },
     { label: 'Top 100', to: 100 },
     { label: 'Top 250', to: 250 },
+    { label: 'Top 500', to: 500 },
   ];
   const now = Date.now();
   const statHolders = getStatHolders(holders);
