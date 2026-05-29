@@ -1763,6 +1763,12 @@ h1 {
     font-size: 0.82rem;
   }
 
+  .table-head {
+    padding-top: 0.24rem;
+    padding-bottom: 0.24rem;
+    font-size: 0.5rem;
+  }
+
   .table-row .wallet-cell {
     overflow: hidden;
     gap: 0.3rem;
