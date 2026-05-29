@@ -1680,13 +1680,7 @@ function App() {
         </div>
         <div className="holder-table">
           <div className="table-row table-head">
-            <button
-              className="table-sort-button"
-              type="button"
-              onClick={() => toggleHolderSort('rank')}
-            >
-              Rank{sortIndicator(holderSort.key, 'rank', holderSort.direction)}
-            </button>
+            <span aria-hidden="true" />
             <span>Wallet</span>
             <button
               className="table-sort-button"

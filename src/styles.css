@@ -1811,31 +1811,47 @@ h1 {
   }
 
   .timeline-panel .panel-title {
-    flex-wrap: wrap;
-    row-gap: 0.4rem;
+    flex-wrap: nowrap;
+    gap: 0.45rem;
   }
 
   .timeline-panel .panel-title-main {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
+    min-width: 0;
+    gap: 0.3rem;
   }
 
-  .timeline-panel .panel-title-actions {
-    flex: 1 1 100%;
-    justify-content: flex-start;
+  .timeline-panel .panel-title-main > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .timeline-panel .chart-filters {
-    width: 100%;
-    flex-wrap: nowrap;
-    justify-content: space-between;
+  .timeline-panel .histogram-summary {
+    font-size: 0.72rem;
     gap: 0.25rem;
   }
 
+  .timeline-panel .histogram-summary strong {
+    font-size: 0.82rem;
+  }
+
+  .timeline-panel .panel-title-actions {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+  }
+
+  .timeline-panel .chart-filters {
+    flex-wrap: nowrap;
+    gap: 0.12rem;
+  }
+
   .timeline-panel .chart-filter {
-    flex: 1 1 0;
+    flex: 0 0 auto;
     min-width: 0;
     text-align: center;
-    padding: 0.32rem 0.2rem;
+    padding: 0.3rem 0.26rem;
+    font-size: 0.55rem;
     letter-spacing: 0;
   }
 
