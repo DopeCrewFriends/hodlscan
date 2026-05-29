@@ -23,6 +23,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow-x: clip;
   font-family: 'Geist Sans', sans-serif;
   background:
     radial-gradient(circle at top left, rgb(46 255 168 / 9%), transparent 30rem),
@@ -1914,10 +1915,6 @@ h1 {
     border-bottom: 0;
   }
 
-  .home-stat-row {
-    grid-template-columns: 1fr;
-  }
-
   .app-nav {
     padding: 0 1rem;
   }
@@ -2033,10 +2030,6 @@ h1 {
 
   .home-step:last-child {
     border-bottom: 0;
-  }
-
-  .home-stat-row {
-    grid-template-columns: 1fr;
   }
 
   .app-nav-link {
@@ -2950,4 +2943,195 @@ h1 {
   content: '•';
   margin-right: 0.45rem;
   color: var(--green);
+}
+
+@media (max-width: 980px) {
+  .home-grid,
+  .home-steps {
+    grid-template-columns: 1fr;
+  }
+
+  .home-hero-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .home-hero-visual {
+    min-height: 7rem;
+  }
+
+  .home-hero-chart-wrap {
+    height: 7rem;
+  }
+
+  .home-step {
+    border-right: 0;
+    border-bottom: 1px solid rgb(255 255 255 / 6%);
+  }
+
+  .home-step:last-child {
+    border-bottom: 0;
+  }
+
+  .home-search-card .panel-title {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+
+@media (max-width: 640px) {
+  .terminal-shell {
+    padding: 0 0.75rem 0.85rem;
+  }
+
+  .home-page {
+    gap: 0.7rem;
+  }
+
+  .home-hero {
+    padding: 1rem 0.85rem 0.95rem;
+  }
+
+  .home-hero-grid {
+    gap: 0.85rem;
+  }
+
+  .home-hero-copyblock {
+    gap: 0.7rem;
+  }
+
+  .home-hero h1 {
+    max-width: none;
+    font-size: clamp(1.85rem, 8.8vw, 2.45rem);
+    line-height: 1.02;
+  }
+
+  .home-hero-copy,
+  .home-search-copy {
+    font-size: 0.8rem;
+    line-height: 1.55;
+  }
+
+  .home-hero-visual {
+    min-height: 6.5rem;
+  }
+
+  .home-hero-chart-wrap {
+    height: 6.5rem;
+  }
+
+  .home-pill {
+    font-size: 0.56rem;
+    padding: 0.28rem 0.55rem;
+  }
+
+  .home-steps {
+    padding: 0;
+  }
+
+  .home-step {
+    padding: 0.85rem 0.9rem;
+  }
+
+  .home-step strong {
+    font-size: 0.78rem;
+  }
+
+  .home-step p {
+    font-size: 0.7rem;
+  }
+
+  .home-grid {
+    gap: 0.7rem;
+  }
+
+  .home-tracked-section-head.panel-title {
+    padding: 0.75rem 0.85rem;
+  }
+
+  .home-tracked-section-title-row > span {
+    font-size: 0.78rem;
+  }
+
+  .home-tracked-section-lead {
+    font-size: 0.68rem;
+  }
+
+  .home-tracked-list,
+  .home-search-body {
+    padding: 0.75rem 0.85rem 0.9rem;
+  }
+
+  .home-tracked-coin {
+    padding: 0.75rem 0.8rem;
+  }
+
+  .home-tracked-coin-layout {
+    gap: 0.65rem;
+  }
+
+  .home-tracked-image,
+  .skeleton-tracked-image {
+    width: 2.85rem;
+    height: 2.85rem;
+  }
+
+  .home-tracked-coin-title strong {
+    font-size: 0.95rem;
+  }
+
+  .home-tracked-symbol {
+    font-size: 0.72rem;
+  }
+
+  .home-tracked-coin-copy {
+    font-size: 0.68rem;
+    line-height: 1.48;
+  }
+
+  .home-tracked-coin .home-stat {
+    padding: 0.5rem 0.3rem;
+  }
+
+  .home-tracked-coin .home-stat small {
+    font-size: 0.48rem;
+    letter-spacing: 0.05em;
+  }
+
+  .home-tracked-coin .home-stat strong {
+    font-size: 0.84rem;
+  }
+
+  .home-search-card .panel-title {
+    padding: 0.75rem 0.85rem;
+  }
+
+  .home-search-demo {
+    padding: 0.68rem 0.75rem;
+  }
+
+  .home-feature-list {
+    font-size: 0.72rem;
+  }
+}
+
+@media (max-width: 400px) {
+  .home-tracked-open-label {
+    display: none;
+  }
+
+  .home-tracked-open {
+    padding: 0.36rem 0.48rem;
+  }
+
+  .home-tracked-coin-title-row {
+    gap: 0.4rem;
+  }
+
+  .home-tracked-coin .home-stat small {
+    font-size: 0.44rem;
+  }
+
+  .home-tracked-coin .home-stat strong {
+    font-size: 0.78rem;
+  }
 }

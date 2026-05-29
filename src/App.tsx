@@ -719,7 +719,7 @@ function TrackedCoinCard({
               <span className="home-tracked-symbol">${symbol}</span>
             </div>
             <span className="home-tracked-open" aria-hidden="true">
-              Open
+              <span className="home-tracked-open-label">Open</span>
               <span className="home-tracked-open-arrow">→</span>
             </span>
           </div>
