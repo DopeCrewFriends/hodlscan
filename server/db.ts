@@ -515,7 +515,63 @@ export async function appendHolderCountHistory({
   }
 }
 
-export async function getSnapshotById(id: number): Promise<SnapshotRow> {
+export async function getEarliestHistoryDate(
+  mint: string,
+): Promise<string | null> {
+  if (!isSupabaseConfigured()) {
+    return null;
+  }
+
+  const { data, error } = await getSupabase()
+    .from('holder_count_history')
+    .select('scanned_at')
+    .eq('mint', mint)
+    .order('scanned_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingHolderCountHistoryTable(error)) {
+      return null;
+    }
+    throw new Error(error.message);
+  }
+
+  return data?.scanned_at ?? null;
+}
+
+export async function insertHolderCountHistoryRows(
+  rows: { mint: string; holder_count: number; scanned_at: string }[],
+): Promise<number> {
+  if (!isSupabaseConfigured()) {
+    throw new Error(
+      'Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.',
+    );
+  }
+
+  let inserted = 0;
+  for (const rowChunk of chunk(rows, WRITE_CHUNK_SIZE)) {
+    const { error } = await getSupabase()
+      .from('holder_count_history')
+      .insert(rowChunk);
+
+    if (error) {
+      if (isMissingHolderCountHistoryTable(error)) {
+        return inserted;
+      }
+      throw new Error(error.message);
+    }
+
+    inserted += rowChunk.length;
+  }
+
+  return inserted;
+}
+
+export async function deleteHolderCountHistoryBefore(
+  mint: string,
+  beforeIso: string,
+): Promise<number> {
   if (!isSupabaseConfigured()) {
     throw new Error(
       'Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.',
@@ -523,16 +579,20 @@ export async function getSnapshotById(id: number): Promise<SnapshotRow> {
   }
 
   const { data, error } = await getSupabase()
-    .from('snapshots')
-    .select('*')
-    .eq('id', id)
-    .single();
+    .from('holder_count_history')
+    .delete()
+    .eq('mint', mint)
+    .lt('scanned_at', beforeIso)
+    .select('id');
 
   if (error) {
+    if (isMissingHolderCountHistoryTable(error)) {
+      return 0;
+    }
     throw new Error(error.message);
   }
 
-  return data as SnapshotRow;
+  return data?.length ?? 0;
 }
 
 export async function getLatestSnapshot(): Promise<SnapshotRow | null> {
@@ -608,21 +668,6 @@ export async function buildMetricHolders(
       previous_rank: state?.last_rank ?? null,
     };
   });
-}
-
-export async function getAllSnapshotHolders(
-  snapshotId: number,
-): Promise<SnapshotHolderRow[]> {
-  const holders = await fetchAll<SnapshotHolderRecord>((from, to) =>
-    getSupabase()
-      .from('snapshot_holders')
-      .select('*')
-      .eq('snapshot_id', snapshotId)
-      .order('rank', { ascending: true })
-      .range(from, to),
-  );
-
-  return hydrateSnapshotHolders(holders);
 }
 
 export async function saveSnapshotMetrics({

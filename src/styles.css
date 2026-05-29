@@ -973,9 +973,11 @@ h1 {
 }
 
 .diamond-hands-badge {
-  width: 1.65rem;
-  height: 1.65rem;
+  width: 1.2rem;
+  height: 1.2rem;
   object-fit: contain;
+  /* Keep within the row's line height so diamond-hands rows aren't taller. */
+  margin: -0.4rem 0;
 }
 
 .error-panel,

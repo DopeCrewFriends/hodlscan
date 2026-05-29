@@ -31,10 +31,11 @@ export const config = {
   walletPortfolioCacheTtlMs: Number(
     process.env.WALLET_PORTFOLIO_CACHE_TTL_MS || 10 * 60_000,
   ),
-  autoRefreshMs: Number(process.env.AUTO_REFRESH_MS || 60_000),
+  autoRefreshMs: Number(process.env.AUTO_REFRESH_MS || 300_000),
   disableLocalAutoRefresh: process.env.DISABLE_LOCAL_AUTO_REFRESH === 'true',
   refreshSecret: process.env.REFRESH_SECRET || '',
   cronSecret: process.env.CRON_SECRET || '',
+  duneApiKey: process.env.DUNE_API_KEY || '',
   supabaseUrl:
     process.env.SUPABASE_URL ||
     process.env.NEXT_PUBLIC_SUPABASE_URL ||

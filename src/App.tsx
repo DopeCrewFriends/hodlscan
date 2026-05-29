@@ -16,10 +16,18 @@ const holderTimeFilters = [
   { id: '90d-plus', label: '90d+', min: 90 },
 ] as const;
 const chartTimeFilters = [
-  { id: '1d', label: '1d', days: 1, maxBars: 48 },
-  { id: '7d', label: '7d', days: 7, maxBars: 96 },
-  { id: '30d', label: '30d', days: 30, maxBars: 160 },
-  { id: 'all', label: 'all', days: Number.POSITIVE_INFINITY, maxBars: 220 },
+  { id: '1d', label: '1d', days: 1, maxBars: 96, bucketMinutes: 15 },
+  { id: '7d', label: '7d', days: 7, maxBars: 96, bucketMinutes: 120 },
+  { id: '30d', label: '30d', days: 30, maxBars: 160, bucketMinutes: 1440 },
+  { id: '60d', label: '60d', days: 60, maxBars: 200, bucketMinutes: 1440 },
+  { id: '90d', label: '90d', days: 90, maxBars: 220, bucketMinutes: 1440 },
+  {
+    id: 'all',
+    label: 'all',
+    days: Number.POSITIVE_INFINITY,
+    maxBars: 400,
+    bucketMinutes: 1440,
+  },
 ] as const;
 const percentFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
@@ -352,6 +360,28 @@ function matchesHolderTimeFilter(holder: Holder, filterId: HolderTimeFilterId) {
   return true;
 }
 
+function bucketByMinutes(
+  points: HistoryPoint[],
+  minutes: number,
+): HistoryPoint[] {
+  if (minutes <= 0) {
+    return points;
+  }
+  const slotMs = minutes * 60 * 1000;
+  const bySlot = new Map<number, HistoryPoint>();
+  for (const point of points) {
+    const slot = Math.floor(new Date(point.scanned_at).getTime() / slotMs);
+    const existing = bySlot.get(slot);
+    // Keep the latest snapshot within each time slot.
+    if (!existing || point.scanned_at > existing.scanned_at) {
+      bySlot.set(slot, point);
+    }
+  }
+  return [...bySlot.values()].sort((left, right) =>
+    left.scanned_at.localeCompare(right.scanned_at),
+  );
+}
+
 function sampleHistoryPoints(points: HistoryPoint[], maxPoints: number) {
   if (points.length <= maxPoints) {
     return points;
@@ -421,17 +451,20 @@ function HolderTimeline({
           nowMs - activeChartFilter.days * 24 * 60 * 60 * 1000,
       )
     : plottedHistory;
-  const recentHistory = sampleHistoryPoints(
+  const bucketedHistory = bucketByMinutes(
     filteredHistory,
+    activeChartFilter.bucketMinutes,
+  );
+  const recentHistory = sampleHistoryPoints(
+    bucketedHistory,
     activeChartFilter.maxBars ?? MAX_HISTOGRAM_BARS,
   );
   const counts = recentHistory.map((point) => point.holder_count);
   const rawMin = counts.length ? Math.min(...counts) : 0;
   const rawMax = counts.length ? Math.max(...counts) : 1;
-  const rawRange = Math.max(rawMax - rawMin, 1);
-  const padding = Math.max(1, Math.ceil(rawRange * 0.12));
-  const scaleMin = Math.max(0, rawMin - padding);
-  const scaleMax = rawMax + padding;
+  // Reactive linear scale: fit exactly to the min/max of the selected timeframe.
+  const scaleMin = rawMin;
+  const scaleMax = rawMax;
   const scaleRange = Math.max(scaleMax - scaleMin, 1);
   const latestPoint = recentHistory.at(-1);
   const periodStart = recentHistory[0];

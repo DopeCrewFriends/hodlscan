@@ -7,6 +7,7 @@ data/*.sqlite-*
 .env
 .env.*
 !.env.example
+.cursor/mcp.json
 *.local
 *.log
 *:Zone.Identifier

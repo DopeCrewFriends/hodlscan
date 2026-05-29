@@ -12,7 +12,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "NODE_ENV=production tsx server/index.ts",
-    "smoke": "tsx server/smoke.ts"
+    "smoke": "tsx server/smoke.ts",
+    "import:history": "tsx server/import-history-csv.ts",
+    "import:history:dune": "tsx server/import-dune-history.ts"
   },
   "dependencies": {
     "@fontsource/geist-sans": "^5.2.5",
@@ -22,7 +24,6 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "geist": "^1.7.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "ws": "^8.20.1"
