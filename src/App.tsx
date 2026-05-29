@@ -8,7 +8,7 @@ const DIAMOND_HANDS_DAYS = 90;
 const MAX_HISTOGRAM_BARS = 56;
 const HOLDERS_PAGE_SIZE = 100;
 const holderTimeFilters = [
-  { id: 'all', label: 'all hodlers' },
+  { id: 'all', label: 'all' },
   { id: 'under-1d', label: '< 1d', min: 0, max: 1 },
   { id: '1-7d', label: '1-7d', min: 1, max: 7 },
   { id: '7-30d', label: '7-30d', min: 7, max: 30 },
@@ -376,18 +376,24 @@ function StatCard({
   tone,
   compact,
   valueStyle,
+  valueIcon,
 }: {
   label: ReactNode;
   value: string;
   tone?: 'good' | 'bad';
   compact?: boolean;
   valueStyle?: CSSProperties;
+  valueIcon?: ReactNode;
 }) {
   return (
     <section className={`panel stat-card${compact ? ' stat-card-compact' : ''}`}>
       <span className="label stat-label">{label}</span>
-      <strong className={tone ? `tone-${tone}` : undefined} style={valueStyle}>
+      <strong
+        className={`stat-value${tone ? ` tone-${tone}` : ''}`}
+        style={valueStyle}
+      >
         {value}
+        {valueIcon}
       </strong>
     </section>
   );
@@ -1255,22 +1261,16 @@ function App() {
             value={metrics ? wholeNumberFormatter.format(metrics.holderCount) : '0'}
           />
           <StatCard
-            label="Total supply"
-            value={formatCompact(supply)}
-          />
-          <StatCard
-            label={
-              <>
-                <img
-                  className="stat-label-icon"
-                  src={DIAMOND_HANDS_IMAGE}
-                  alt=""
-                  aria-hidden="true"
-                />
-                <span>Diamond hands</span>
-              </>
-            }
+            label="Diamond hands"
             value={`${formatNumber(diamondHandsPct)}%`}
+            valueIcon={
+              <img
+                className="stat-value-icon"
+                src={DIAMOND_HANDS_IMAGE}
+                alt=""
+                aria-hidden="true"
+              />
+            }
             compact
             valueStyle={ageGradientStyle(
               DIAMOND_HANDS_DAYS,
@@ -1289,7 +1289,7 @@ function App() {
             compact
           />
           <StatCard
-            label="Oldest current"
+            label="Oldest hodler"
             value={formatAge(oldestCurrentAgeDays)}
             valueStyle={ageGradientStyle(
               oldestCurrentAgeDays,
