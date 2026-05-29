@@ -468,7 +468,9 @@ function CoinShareActions({
   avgHoldDays: number | null;
   oldestDays: number | null;
   price: number | null;
-  distribution: { label: string; pctSupply: number }[] | null;
+  distribution:
+    | { label: string; pctSupply: number; averageAgeDays: number }[]
+    | null;
 }) {
   const [downloading, setDownloading] = useState(false);
 
@@ -491,12 +493,22 @@ function CoinShareActions({
       params.set('price', String(price));
     }
     if (distribution && distribution.length) {
-      const values = DISTRIBUTION_BRACKETS.map((label) => {
-        const bracket = distribution.find((entry) => entry.label === label);
-        return bracket ? formatNumber(bracket.pctSupply) : '';
-      });
+      const brackets = DISTRIBUTION_BRACKETS.map((label) =>
+        distribution.find((entry) => entry.label === label),
+      );
+      const values = brackets.map((bracket) =>
+        bracket ? formatNumber(bracket.pctSupply) : '',
+      );
       if (values.some((value) => value !== '')) {
         params.set('dist', values.join(','));
+        params.set(
+          'age',
+          brackets
+            .map((bracket) =>
+              bracket ? bracket.averageAgeDays.toFixed(1) : '',
+            )
+            .join(','),
+        );
       }
     }
     return `${apiBase}/api/flex?${params.toString()}`;

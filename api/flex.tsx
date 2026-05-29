@@ -35,10 +35,18 @@ function formatPrice(priceRaw: string | null) {
   return `$${price.toFixed(digits)}`;
 }
 
-function parseDist(distRaw: string | null) {
+function parseNumberList(raw: string | null) {
+  return (raw || '').split(',').map((value) => {
+    const parsed = Number(value);
+    return value.trim() !== '' && Number.isFinite(parsed) ? parsed : null;
+  });
+}
+
+function parseDist(distRaw: string | null, ageRaw: string | null) {
   if (!distRaw) {
     return [];
   }
+  const ages = parseNumberList(ageRaw);
   return distRaw
     .split(',')
     .map((value, index) => {
@@ -46,9 +54,12 @@ function parseDist(distRaw: string | null) {
       if (value.trim() === '' || !Number.isFinite(pct) || !DIST_LABELS[index]) {
         return null;
       }
-      return { label: DIST_LABELS[index], pct };
+      return { label: DIST_LABELS[index], pct, ageDays: ages[index] ?? null };
     })
-    .filter((entry): entry is { label: string; pct: number } => entry !== null);
+    .filter(
+      (entry): entry is { label: string; pct: number; ageDays: number | null } =>
+        entry !== null,
+    );
 }
 
 export default function handler(req: Request) {
@@ -59,7 +70,10 @@ export default function handler(req: Request) {
   const avgHold = formatDays(searchParams.get('avgHoldDays'));
   const oldest = formatDays(searchParams.get('oldestDays'));
   const price = formatPrice(searchParams.get('price'));
-  const distribution = parseDist(searchParams.get('dist'));
+  const distribution = parseDist(
+    searchParams.get('dist'),
+    searchParams.get('age'),
+  );
   const today = new Date().toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'long',
@@ -237,13 +251,25 @@ export default function handler(req: Request) {
                     style={{
                       display: 'flex',
                       justifyContent: 'flex-end',
-                      width: '96px',
+                      width: '88px',
                       fontSize: '22px',
                       fontWeight: 800,
                       color: GREEN,
                     }}
                   >
                     {entry.pct.toFixed(2)}%
+                  </span>
+                  <span
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'flex-end',
+                      width: '78px',
+                      fontSize: '22px',
+                      fontWeight: 700,
+                      color: MUTED,
+                    }}
+                  >
+                    {entry.ageDays != null ? `${entry.ageDays.toFixed(1)}d` : ''}
                   </span>
                 </div>
               ))}
