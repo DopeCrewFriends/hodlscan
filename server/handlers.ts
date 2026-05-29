@@ -22,6 +22,7 @@ import {
 import { attachHistoricalHoldingTimes } from './holder-history.js';
 import { scanTokenHolders } from './holders.js';
 import { getTokenMetadata } from './metadata.js';
+import { fetchPriceHistory } from './price-history.js';
 import { fetchWalletPortfolio } from './wallet-portfolio.js';
 import { classifyWalletOwners } from './wallet-classifier.js';
 
@@ -85,6 +86,12 @@ export async function getWalletPortfolioResponse(address?: string) {
     }
     throw error;
   }
+}
+
+export async function getPriceHistoryResponse(mint?: string) {
+  const resolvedMint = (mint || '').trim() || config.tokenMint;
+  const points = await fetchPriceHistory(resolvedMint);
+  return { mint: resolvedMint, points };
 }
 
 export function isAuthorizedRefresh({

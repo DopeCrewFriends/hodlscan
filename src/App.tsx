@@ -49,6 +49,17 @@ const usdCompactFormatter = new Intl.NumberFormat('en-US', {
   notation: 'compact',
   maximumFractionDigits: 2,
 });
+function formatPriceUsd(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '$0';
+  }
+  if (value >= 1) {
+    return usdCompactFormatter.format(value);
+  }
+  const digits = Math.min(8, Math.max(2, Math.ceil(-Math.log10(value)) + 2));
+  return `$${value.toFixed(digits)}`;
+}
+
 const dateFormatter = new Intl.DateTimeFormat(undefined);
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: 'medium',
@@ -149,6 +160,11 @@ interface HolderResponse {
     pctSupply: number;
     averageAgeDays: number;
   }>;
+}
+
+interface PricePoint {
+  t: string;
+  close: number;
 }
 
 interface HistoryPoint {
@@ -429,13 +445,115 @@ function StatCard({
   );
 }
 
+function CoinShareActions({
+  symbol,
+  holders,
+  diamondPct,
+  avgHoldDays,
+  oldestDays,
+  price,
+  topSupplyPct,
+}: {
+  symbol: string;
+  holders: number | null;
+  diamondPct: number | null;
+  avgHoldDays: number | null;
+  oldestDays: number | null;
+  price: number | null;
+  topSupplyPct: number | null;
+}) {
+  const [downloading, setDownloading] = useState(false);
+
+  function buildFlexUrl() {
+    const params = new URLSearchParams();
+    params.set('symbol', symbol);
+    if (holders != null) {
+      params.set('holders', wholeNumberFormatter.format(holders));
+    }
+    if (diamondPct != null) {
+      params.set('diamondPct', formatNumber(diamondPct));
+    }
+    if (avgHoldDays != null) {
+      params.set('avgHoldDays', avgHoldDays.toFixed(2));
+    }
+    if (oldestDays != null) {
+      params.set('oldestDays', oldestDays.toFixed(2));
+    }
+    if (price != null) {
+      params.set('price', String(price));
+    }
+    if (topSupplyPct != null) {
+      params.set('topSupplyPct', formatNumber(topSupplyPct));
+    }
+    return `${apiBase}/api/flex?${params.toString()}`;
+  }
+
+  async function handleDownload() {
+    setDownloading(true);
+    try {
+      const response = await fetch(buildFlexUrl());
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = `hodlscan-${symbol.toLowerCase()}.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  function handleShare() {
+    const parts = [`$${symbol} on HODLSCAN`];
+    if (holders != null) {
+      parts.push(`${wholeNumberFormatter.format(holders)} hodlers`);
+    }
+    if (diamondPct != null) {
+      parts.push(`${formatNumber(diamondPct)}% 💎 diamond hands`);
+    }
+    if (avgHoldDays != null) {
+      parts.push(`${formatAge(avgHoldDays)} avg hodl`);
+    }
+    const shareUrl = window.location.origin;
+    const intent = `https://twitter.com/intent/tweet?text=${encodeURIComponent(
+      parts.join(' · '),
+    )}&url=${encodeURIComponent(shareUrl)}`;
+    window.open(intent, '_blank', 'noopener,noreferrer');
+  }
+
+  return (
+    <div className="flex-card-actions">
+      <button
+        type="button"
+        className="flex-card-button"
+        disabled={downloading}
+        onClick={() => void handleDownload()}
+      >
+        {downloading ? 'rendering…' : 'Download card'}
+      </button>
+      <button
+        type="button"
+        className="flex-card-button flex-card-button-ghost"
+        onClick={handleShare}
+      >
+        Share
+      </button>
+    </div>
+  );
+}
+
 function HolderTimeline({
   history,
+  priceHistory,
   nowMs,
   chartTimeFilter,
   onChartTimeFilterChange,
 }: {
   history: HistoryPoint[];
+  priceHistory: PricePoint[];
   nowMs: number;
   chartTimeFilter: ChartTimeFilterId;
   onChartTimeFilterChange: (filter: ChartTimeFilterId) => void;
@@ -472,6 +590,62 @@ function HolderTimeline({
     latestPoint && periodStart
       ? latestPoint.holder_count - periodStart.holder_count
       : 0;
+
+  const priceSeries = useMemo(
+    () =>
+      priceHistory
+        .map((point) => ({ ms: new Date(point.t).getTime(), close: point.close }))
+        .filter((point) => Number.isFinite(point.ms) && point.close > 0)
+        .sort((left, right) => left.ms - right.ms),
+    [priceHistory],
+  );
+  const priceOverlay = useMemo(() => {
+    if (priceSeries.length === 0 || recentHistory.length === 0) {
+      return null;
+    }
+
+    const PAD = 6;
+    let cursor = 0;
+    const matched: { index: number; close: number }[] = [];
+    recentHistory.forEach((point, index) => {
+      const barMs = new Date(point.scanned_at).getTime();
+      while (
+        cursor + 1 < priceSeries.length &&
+        priceSeries[cursor + 1].ms <= barMs
+      ) {
+        cursor += 1;
+      }
+      if (priceSeries[cursor].ms <= barMs) {
+        matched.push({ index, close: priceSeries[cursor].close });
+      }
+    });
+
+    if (matched.length < 2) {
+      return null;
+    }
+
+    const closes = matched.map((entry) => entry.close);
+    const priceMin = Math.min(...closes);
+    const priceMax = Math.max(...closes);
+    const priceRange = Math.max(priceMax - priceMin, Number.EPSILON);
+    const n = recentHistory.length;
+    const points = matched.map((entry) => {
+      const x = ((entry.index + 0.5) / n) * 100;
+      const y = PAD + (1 - (entry.close - priceMin) / priceRange) * (100 - PAD * 2);
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    });
+
+    return {
+      polyline: points.join(' '),
+      areaPath: `M ${points[0]} L ${points
+        .slice(1)
+        .join(' L ')} L ${((matched.at(-1)!.index + 0.5) / n) * 100},100 L ${
+        ((matched[0].index + 0.5) / n) * 100
+      },100 Z`,
+      priceMin,
+      priceMax,
+    };
+  }, [priceSeries, recentHistory]);
 
   return (
     <section className="panel timeline-panel">
@@ -521,11 +695,18 @@ function HolderTimeline({
         {plottedHistory.length === 0 ? (
           <div className="empty-state">waiting for hodler count data</div>
         ) : (
-          <div className="histogram-chart">
+          <div
+            className={
+              priceOverlay
+                ? 'histogram-chart histogram-chart-priced'
+                : 'histogram-chart'
+            }
+          >
             <div className="histogram-scale" aria-hidden="true">
               <span>{wholeNumberFormatter.format(Math.round(scaleMax))}</span>
               <span>{wholeNumberFormatter.format(Math.round(scaleMin))}</span>
             </div>
+            <div className="histogram-plot">
             <div className="histogram-bars">
             {recentHistory.map((point, index) => {
                 const previous = recentHistory[index - 1];
@@ -578,6 +759,47 @@ function HolderTimeline({
                 );
             })}
             </div>
+              {priceOverlay ? (
+                <svg
+                  className="price-overlay"
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  aria-hidden="true"
+                >
+                  <defs>
+                    <linearGradient
+                      id="price-overlay-fill"
+                      x1="0"
+                      y1="0"
+                      x2="0"
+                      y2="1"
+                    >
+                      <stop offset="0%" stopColor="var(--amber)" stopOpacity="0.22" />
+                      <stop offset="100%" stopColor="var(--amber)" stopOpacity="0" />
+                    </linearGradient>
+                  </defs>
+                  <path
+                    className="price-overlay-area"
+                    d={priceOverlay.areaPath}
+                    fill="url(#price-overlay-fill)"
+                  />
+                  <polyline
+                    className="price-overlay-line"
+                    points={priceOverlay.polyline}
+                  />
+                </svg>
+              ) : null}
+            </div>
+            {priceOverlay ? (
+              <div className="price-scale" aria-hidden="true">
+                <span>{formatPriceUsd(priceOverlay.priceMax)}</span>
+                <span className="price-scale-legend">
+                  <span className="price-scale-dot" />
+                  price
+                </span>
+                <span>{formatPriceUsd(priceOverlay.priceMin)}</span>
+              </div>
+            ) : null}
           </div>
         )}
       </div>
@@ -589,6 +811,7 @@ function App() {
   const [token, setToken] = useState<TokenInfo | null>(null);
   const [holderData, setHolderData] = useState<HolderResponse | null>(null);
   const [history, setHistory] = useState<HistoryPoint[]>([]);
+  const [priceHistory, setPriceHistory] = useState<PricePoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastSyncAtMs, setLastSyncAtMs] = useState(Date.now());
   const [nowMs, setNowMs] = useState(Date.now());
@@ -617,14 +840,19 @@ function App() {
   const loadingRef = useRef(true);
 
   async function load() {
-    const [tokenResponse, holdersResponse, historyResponse] = await Promise.all([
-      fetchJson<TokenInfo>('/api/token'),
-      fetchJson<HolderResponse>('/api/holders'),
-      fetchJson<{ history: HistoryPoint[] }>('/api/history'),
-    ]);
+    const [tokenResponse, holdersResponse, historyResponse, priceResponse] =
+      await Promise.all([
+        fetchJson<TokenInfo>('/api/token'),
+        fetchJson<HolderResponse>('/api/holders'),
+        fetchJson<{ history: HistoryPoint[] }>('/api/history'),
+        fetchJson<{ points: PricePoint[] }>('/api/price-history').catch(() => ({
+          points: [],
+        })),
+      ]);
     setToken(tokenResponse);
     setHolderData(holdersResponse);
     setHistory(historyResponse.history);
+    setPriceHistory(priceResponse.points);
     setLastSyncAtMs(Date.now());
   }
 
@@ -667,12 +895,17 @@ function App() {
     refreshingRef.current = true;
 
     try {
-      const [holdersResponse, historyResponse] = await Promise.all([
-        fetchJson<HolderResponse>('/api/holders'),
-        fetchJson<{ history: HistoryPoint[] }>('/api/history'),
-      ]);
+      const [holdersResponse, historyResponse, priceResponse] =
+        await Promise.all([
+          fetchJson<HolderResponse>('/api/holders'),
+          fetchJson<{ history: HistoryPoint[] }>('/api/history'),
+          fetchJson<{ points: PricePoint[] }>('/api/price-history').catch(
+            () => ({ points: [] }),
+          ),
+        ]);
       setHolderData(holdersResponse);
       setHistory(historyResponse.history);
+      setPriceHistory(priceResponse.points);
       setLastSyncAtMs(Date.now());
     } catch (syncError) {
       const message =
@@ -883,6 +1116,7 @@ function App() {
         : null,
     [holderData, routeWallet],
   );
+  const latestPriceUsd = priceHistory.at(-1)?.close ?? null;
 
   function handleSearchSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1288,7 +1522,19 @@ function App() {
             </div>
           </div>
         </div>
-        <section className="top-stats-grid">
+        <div className="command-bar-side">
+          {token ? (
+            <CoinShareActions
+              symbol={token.metadata.symbol || 'HODL'}
+              holders={metrics?.holderCount ?? null}
+              diamondPct={diamondHandsPct}
+              avgHoldDays={metrics?.averageHolderAgeDays ?? null}
+              oldestDays={oldestCurrentAgeDays}
+              price={latestPriceUsd}
+              topSupplyPct={metrics?.top10Pct ?? null}
+            />
+          ) : null}
+          <section className="top-stats-grid">
           <StatCard
             label="Total hodlers"
             value={metrics ? wholeNumberFormatter.format(metrics.holderCount) : '0'}
@@ -1331,13 +1577,15 @@ function App() {
             )}
             compact
           />
-        </section>
+          </section>
+        </div>
       </header>
 
       {error ? <div className="error-panel panel">{error}</div> : null}
       <section className="content-grid">
         <HolderTimeline
           history={history}
+          priceHistory={priceHistory}
           nowMs={nowMs}
           chartTimeFilter={chartTimeFilter}
           onChartTimeFilterChange={setChartTimeFilter}

@@ -8,6 +8,7 @@ import { initDb } from './db.js';
 import {
   getHistoryResponse,
   getHoldersResponse,
+  getPriceHistoryResponse,
   getTokenResponse,
   getWalletPortfolioResponse,
   refreshSnapshotResponse,
@@ -31,6 +32,17 @@ app.get('/api/holders', async (_req, res) => {
 
 app.get('/api/history', async (_req, res) => {
   res.json(await getHistoryResponse());
+});
+
+app.get('/api/price-history', async (req, res) => {
+  try {
+    const mint =
+      typeof req.query.mint === 'string' ? req.query.mint : undefined;
+    res.json(await getPriceHistoryResponse(mint));
+  } catch (error) {
+    const serialized = serializeError(error);
+    res.status(serialized.status).json(serialized.body);
+  }
 });
 
 app.get('/api/wallet', async (req, res) => {

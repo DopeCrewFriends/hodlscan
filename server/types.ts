@@ -140,6 +140,11 @@ export interface WalletPortfolio {
   cached: boolean;
 }
 
+export interface PricePoint {
+  t: string;
+  close: number;
+}
+
 export interface TokenMetadata {
   mint: string;
   name: string | null;

@@ -377,6 +377,18 @@ h1 {
   font-size: clamp(1.1rem, 1.6vw, 1.55rem);
 }
 
+.command-bar-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.command-bar-side .flex-card-actions {
+  margin-top: 0;
+  justify-content: flex-end;
+}
+
 .top-stats-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -667,6 +679,67 @@ h1 {
 .histogram-fill-down {
   background: linear-gradient(180deg, #ffb3bc 0%, var(--red) 55%, #8f1f35 100%);
   box-shadow: 0 0 10px rgb(255 93 115 / 16%);
+}
+
+.histogram-chart-priced {
+  grid-template-columns: auto 1fr auto;
+}
+
+.histogram-plot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.price-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.price-overlay-line {
+  fill: none;
+  stroke: var(--amber);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 4px rgb(255 204 102 / 35%));
+}
+
+.price-scale {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 0.35rem 0 0.15rem;
+  color: var(--amber);
+  font-size: 0.58rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.price-scale-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+.price-scale-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 6px rgb(255 204 102 / 45%);
 }
 
 .chart-filters {
@@ -1064,6 +1137,36 @@ h1 {
   font-weight: 900;
   letter-spacing: 0.1em;
   text-transform: uppercase;
+}
+
+.flex-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.flex-card-button {
+  border: 1px solid #2b3745;
+  background: #d9fff0;
+  color: #06100c;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.flex-card-button-ghost {
+  background: transparent;
+  color: var(--green);
+  border-color: rgb(68 240 162 / 35%);
+}
+
+.flex-card-button-ghost:hover {
+  background: rgb(68 240 162 / 10%);
 }
 
 .wallet-profile-position {
@@ -1683,5 +1786,10 @@ h1 {
     flex: 1 1 auto;
     min-width: 0;
     justify-content: flex-end;
+  }
+
+  .flex-card-button {
+    flex: 1 1 auto;
+    text-align: center;
   }
 }
