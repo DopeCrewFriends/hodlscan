@@ -34,7 +34,7 @@ interface DasAssetResult {
   };
 }
 
-let metadataCache: TokenMetadata | null = null;
+let metadataCache = new Map<string, TokenMetadata>();
 
 function normalizeIpfsUrl(uri: string) {
   if (uri.startsWith('ipfs://')) {
@@ -94,9 +94,9 @@ function extractDasImage(asset: DasAssetResult) {
   return null;
 }
 
-async function getDasMetadata(): Promise<TokenMetadata> {
+async function getDasMetadata(mint: string): Promise<TokenMetadata> {
   const asset = await callRpc<DasAssetResult>('getAsset', {
-    id: config.tokenMint,
+    id: mint,
     options: {
       showFungible: true,
       showUnverifiedCollections: true,
@@ -109,7 +109,7 @@ async function getDasMetadata(): Promise<TokenMetadata> {
   );
 
   return {
-    mint: config.tokenMint,
+    mint,
     name: offchain?.name || content?.metadata?.name || null,
     symbol: offchain?.symbol || content?.metadata?.symbol || null,
     uri: content?.json_uri || null,
@@ -120,19 +120,22 @@ async function getDasMetadata(): Promise<TokenMetadata> {
 }
 
 export async function getTokenMetadata(
+  mint = config.tokenMint,
   forceRefresh = false,
 ): Promise<TokenMetadata> {
-  if (metadataCache && !forceRefresh) {
-    return metadataCache;
+  const cached = metadataCache.get(mint);
+  if (cached && !forceRefresh) {
+    return cached;
   }
 
   try {
-    metadataCache = await getDasMetadata();
-    return metadataCache;
+    const metadata = await getDasMetadata(mint);
+    metadataCache.set(mint, metadata);
+    return metadata;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    metadataCache = {
-      mint: config.tokenMint,
+    const fallback = {
+      mint,
       name: null,
       symbol: null,
       uri: null,
@@ -141,6 +144,7 @@ export async function getTokenMetadata(
       source: 'none',
       error: `getAsset failed: ${message}`,
     };
-    return metadataCache;
+    metadataCache.set(mint, fallback);
+    return fallback;
   }
 }

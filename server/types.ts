@@ -56,6 +56,7 @@ export interface SnapshotRow {
   scanned_at: string;
   source: string;
   error: string | null;
+  tracking?: 'full' | 'lite';
 }
 
 export interface SnapshotHolderRow {

@@ -2,6 +2,8 @@ import type { CSSProperties, FormEvent, ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+const API_KEY_STORAGE = 'hodlscan_api_key';
+const PRO_COMING_SOON = true;
 const AUTO_REFRESH_SECONDS = 60;
 const DIAMOND_HANDS_IMAGE = '/assets/dhands.webp';
 const DIAMOND_HANDS_DAYS = 90;
@@ -65,10 +67,48 @@ const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   timeStyle: 'short',
 });
 
+interface HomePreviewMetrics {
+  holderCount: number | null;
+  diamondHandsPct: number | null;
+  averageHolderAgeDays: number | null;
+}
+
+interface TrackedCoinPreview {
+  mint: string;
+  metadata: TokenInfo['metadata'];
+  scannedAt: string | null;
+  metrics: HomePreviewMetrics | null;
+}
+
+interface ApiAccessMeta {
+  tier: 'free' | 'pro';
+  limits: {
+    coldScanLimit: number;
+    warmReadLimit: number;
+  };
+  rateLimit?: {
+    coldScansRemaining: number;
+    warmReadsRemaining: number;
+    resetsAt: string;
+  };
+  cache?: {
+    fresh: boolean;
+    scannedAt: string;
+    refreshAfter: string;
+  };
+  features: {
+    holderCountHistory: boolean;
+  };
+}
+
 interface TokenInfo {
   mint: string;
+  trackedMint: string;
+  trackedMints?: string[];
+  tracking: 'lite' | 'full';
   endpoints: string[];
   maxDisplayHolders: number;
+  access?: ApiAccessMeta;
   metadata: {
     name: string | null;
     symbol: string | null;
@@ -139,6 +179,8 @@ interface Holder {
 }
 
 interface HolderResponse {
+  tracking?: 'lite' | 'full';
+  access?: ApiAccessMeta;
   snapshot: Snapshot | null;
   holders: Holder[];
   metrics: {
@@ -186,10 +228,18 @@ type SortDirection = 'asc' | 'desc';
 const SOLSCAN_TOKEN_URL = 'https://solscan.io/token/';
 const SOLSCAN_ACCOUNT_URL = 'https://solscan.io/account/';
 const PADRE_TERMINAL_URL = 'https://trade.padre.gg/rk/zil';
+const TRACKED_ROUTE = '__tracked__';
 
 function getRouteMint() {
+  if (/^\/tracked\/?$/.test(window.location.pathname)) {
+    return TRACKED_ROUTE;
+  }
   const match = window.location.pathname.match(/^\/coin\/([^/]+)\/?$/);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function getRoutePro() {
+  return /^\/pro\/?$/.test(window.location.pathname);
 }
 
 function getRouteWallet() {
@@ -197,13 +247,47 @@ function getRouteWallet() {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+function readStoredApiKey() {
+  try {
+    return localStorage.getItem(API_KEY_STORAGE)?.trim() || '';
+  } catch {
+    return '';
+  }
+}
+
+function mintQuery(mint?: string | null) {
+  return mint ? `?mint=${encodeURIComponent(mint)}` : '';
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBase}${path}`, init);
+  const apiKey = readStoredApiKey();
+  const headers = new Headers(init?.headers);
+  if (apiKey) {
+    headers.set('x-hodlscan-api-key', apiKey);
+  }
+
+  const response = await fetch(`${apiBase}${path}`, {
+    ...init,
+    headers,
+  });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error(body.error || `Request failed with ${response.status}`);
   }
   return response.json() as Promise<T>;
+}
+
+function formatRelativeScanTime(value: string, nowMs: number) {
+  const ageMs = Math.max(0, nowMs - new Date(value).getTime());
+  const minutes = Math.floor(ageMs / 60_000);
+  if (minutes < 1) {
+    return 'just now';
+  }
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
 }
 
 function formatNumber(value: number, digits = 2) {
@@ -418,6 +502,7 @@ function StatCard({
   compact,
   valueStyle,
   valueIcon,
+  skeleton,
 }: {
   label: ReactNode;
   value: string;
@@ -425,17 +510,546 @@ function StatCard({
   compact?: boolean;
   valueStyle?: CSSProperties;
   valueIcon?: ReactNode;
+  skeleton?: boolean;
 }) {
   return (
     <section className={`panel stat-card${compact ? ' stat-card-compact' : ''}`}>
       <span className="label stat-label">{label}</span>
-      <strong
-        className={`stat-value${tone ? ` tone-${tone}` : ''}`}
-        style={valueStyle}
+      {skeleton ? (
+        <span className="skeleton skeleton-stat" aria-hidden="true" />
+      ) : (
+        <strong
+          className={`stat-value${tone ? ` tone-${tone}` : ''}`}
+          style={valueStyle}
+        >
+          {value}
+          {valueIcon}
+        </strong>
+      )}
+    </section>
+  );
+}
+
+function buildPlaceholderToken(mint: string, trackedMint?: string): TokenInfo {
+  return {
+    mint,
+    trackedMint: trackedMint || mint,
+    tracking: 'lite',
+    endpoints: [],
+    maxDisplayHolders: 500,
+    metadata: {
+      name: null,
+      symbol: null,
+      uri: null,
+      image: null,
+      description: null,
+      source: 'placeholder',
+    },
+  };
+}
+
+function DashboardSkeletonRows({ count }: { count: number }) {
+  return (
+    <>
+      {Array.from({ length: count }, (_, index) => (
+        <div className="table-row skeleton-table-row" key={index} aria-hidden="true">
+          <span className="skeleton skeleton-cell skeleton-cell-rank" />
+          <span className="skeleton skeleton-cell skeleton-cell-wallet" />
+          <span className="skeleton skeleton-cell skeleton-cell-balance" />
+          <span className="skeleton skeleton-cell skeleton-cell-supply" />
+          <span className="skeleton skeleton-cell skeleton-cell-holding" />
+        </div>
+      ))}
+    </>
+  );
+}
+
+function DistributionSkeleton() {
+  return (
+    <>
+      <div className="distribution-row distribution-head">
+        <span>Bracket</span>
+        <span>Supply</span>
+        <span>Avg age</span>
+      </div>
+      {['Top 10', 'Top 50', 'Top 100', 'Top 250', 'Top 500'].map((label) => (
+        <div className="distribution-row" key={label} aria-hidden="true">
+          <span>{label}</span>
+          <span className="skeleton skeleton-distribution-value" />
+          <span className="skeleton skeleton-distribution-value" />
+        </div>
+      ))}
+    </>
+  );
+}
+
+function ChartSkeleton() {
+  return (
+    <div className="histogram-skeleton" aria-hidden="true">
+      {Array.from({ length: 24 }, (_, index) => (
+        <span
+          className="skeleton histogram-skeleton-bar"
+          key={index}
+          style={{ height: `${28 + ((index * 17) % 55)}%` }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function FakeHistogramChart({ seed = 1 }: { seed?: number }) {
+  const bars = useMemo(
+    () =>
+      Array.from({ length: 36 }, (_, index) => {
+        const t = Math.sin((index + seed) * 12.9898) * 43758.5453;
+        const noise = t - Math.floor(t);
+        const wave = (Math.sin((index + seed) / 4.5) + 1) / 2;
+        return 14 + noise * 38 + wave * 34;
+      }),
+    [seed],
+  );
+  const scaleMax = 1200 + (seed % 7) * 180;
+  const scaleMin = scaleMax - 420 - (seed % 5) * 40;
+
+  return (
+    <div className="histogram-chart histogram-chart-preview" aria-hidden="true">
+      <div className="histogram-scale">
+        <span>{wholeNumberFormatter.format(scaleMax)}</span>
+        <span>{wholeNumberFormatter.format(scaleMin)}</span>
+      </div>
+      <div className="histogram-plot">
+        <div className="histogram-bars">
+          {bars.map((height, index) => (
+            <div className="histogram-bar histogram-bar-preview" key={index}>
+              <div
+                className={
+                  index === bars.length - 1
+                    ? 'histogram-fill histogram-fill-preview histogram-fill-preview-latest'
+                    : 'histogram-fill histogram-fill-preview'
+                }
+                style={{ height: `${height}%` }}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LockedLiteChart({
+  seed,
+  onNavigateToPro,
+}: {
+  seed: number;
+  onNavigateToPro: () => void;
+}) {
+  return (
+    <div className="histogram-locked">
+      <div className="histogram-locked-preview">
+        <FakeHistogramChart seed={seed} />
+      </div>
+      <div className="histogram-locked-overlay">
+        <span className="kicker">Pro</span>
+        <p>Upgrade to Pro to view hodler count history on searched coins.</p>
+        <button type="button" className="histogram-locked-cta" onClick={onNavigateToPro}>
+          Pro access
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TrackedCoinCardSkeleton() {
+  return (
+    <div className="home-tracked-coin home-tracked-coin-skeleton" aria-hidden="true">
+      <div className="home-tracked-coin-layout">
+        <span className="skeleton skeleton-tracked-image" />
+        <div className="home-tracked-coin-main">
+          <div className="home-tracked-coin-title-row">
+            <div className="home-tracked-coin-title">
+              <span className="skeleton skeleton-tracked-name" />
+              <span className="skeleton skeleton-tracked-symbol" />
+            </div>
+            <span className="skeleton skeleton-tracked-open" />
+          </div>
+          <span className="skeleton skeleton-tracked-copy" />
+        </div>
+      </div>
+      <div className="home-stat-row">
+        <span className="skeleton skeleton-stat-block" />
+        <span className="skeleton skeleton-stat-block" />
+        <span className="skeleton skeleton-stat-block" />
+      </div>
+    </div>
+  );
+}
+
+function TrackedCoinCard({
+  coin,
+  loading,
+  onOpen,
+}: {
+  coin: TrackedCoinPreview;
+  loading: boolean;
+  onOpen: (mint: string) => void;
+}) {
+  const symbol = coin.metadata.symbol || coin.mint.slice(0, 4);
+  const name = coin.metadata.name || symbol;
+
+  return (
+    <button
+      type="button"
+      className="home-tracked-coin"
+      aria-label={`Open ${name} dashboard`}
+      onClick={() => onOpen(coin.mint)}
+    >
+      <div className="home-tracked-coin-layout">
+        <div className="token-image-frame home-tracked-image">
+          {coin.metadata.image ? (
+            <img src={coin.metadata.image} alt={name} />
+          ) : (
+            <span>{symbol.slice(0, 3)}</span>
+          )}
+        </div>
+        <div className="home-tracked-coin-main">
+          <div className="home-tracked-coin-title-row">
+            <div className="home-tracked-coin-title">
+              <strong>{name}</strong>
+              <span className="home-tracked-symbol">${symbol}</span>
+            </div>
+            <span className="home-tracked-open" aria-hidden="true">
+              Open
+              <span className="home-tracked-open-arrow">→</span>
+            </span>
+          </div>
+          <p className="home-tracked-coin-copy">
+            Full hodler history, rank changes, price overlay, and auto-refresh.
+          </p>
+        </div>
+      </div>
+      <div className="home-stat-row">
+        <div className="home-stat">
+          <small>total hodlers</small>
+          {loading ? (
+            <span className="skeleton skeleton-stat" aria-hidden="true" />
+          ) : (
+            <strong>
+              {coin.metrics?.holderCount != null
+                ? wholeNumberFormatter.format(coin.metrics.holderCount)
+                : '—'}
+            </strong>
+          )}
+        </div>
+        <div className="home-stat">
+          <small>diamond hands</small>
+          {loading ? (
+            <span className="skeleton skeleton-stat" aria-hidden="true" />
+          ) : (
+            <strong>
+              {coin.metrics?.diamondHandsPct != null
+                ? `${formatNumber(coin.metrics.diamondHandsPct)}%`
+                : '—'}
+            </strong>
+          )}
+        </div>
+        <div className="home-stat">
+          <small>avg hodl</small>
+          {loading ? (
+            <span className="skeleton skeleton-stat" aria-hidden="true" />
+          ) : (
+            <strong>
+              {coin.metrics?.averageHolderAgeDays != null
+                ? formatAge(coin.metrics.averageHolderAgeDays)
+                : '—'}
+            </strong>
+          )}
+        </div>
+      </div>
+      {coin.scannedAt ? (
+        <span className="home-tracked-coin-meta">
+          Last scan {formatRelativeScanTime(coin.scannedAt, Date.now())}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function HomePage({
+  trackedCoins,
+  trackedLoading,
+  onOpenTracked,
+  onFocusSearch,
+}: {
+  trackedCoins: TrackedCoinPreview[];
+  trackedLoading: boolean;
+  onOpenTracked: (mint: string) => void;
+  onFocusSearch: () => void;
+}) {
+  const showSkeletons = trackedLoading && trackedCoins.length === 0;
+
+  return (
+    <section className="home-page">
+      <section className="home-hero panel">
+        <div className="home-hero-grid">
+          <div className="home-hero-copyblock">
+            <span className="kicker">Solana holder analytics</span>
+            <h1>
+              See who is
+              <span className="home-hero-accent"> really hodling.</span>
+            </h1>
+            <p className="home-hero-copy">
+              Live holder scans for any mint. Deep history and rank tracking for
+              coins we monitor full-time.
+            </p>
+            <div className="home-hero-pills">
+              <span className="home-pill">on-chain hold times</span>
+              <span className="home-pill">supply distribution</span>
+              <span className="home-pill">hourly refresh</span>
+            </div>
+          </div>
+          <div className="home-hero-visual" aria-hidden="true">
+            <div className="home-hero-chart-wrap">
+              <FakeHistogramChart seed={42} />
+            </div>
+            <div className="home-hero-visual-glow" />
+          </div>
+        </div>
+      </section>
+
+      <section className="home-steps panel">
+        <div className="home-step">
+          <span className="home-step-index">01</span>
+          <strong>Search a mint</strong>
+          <p>Paste any Solana token address in the bar above.</p>
+        </div>
+        <div className="home-step">
+          <span className="home-step-index">02</span>
+          <strong>Scan hodlers</strong>
+          <p>Top wallets, supply brackets, and diamond hands stats.</p>
+        </div>
+        <div className="home-step">
+          <span className="home-step-index">03</span>
+          <strong>Track over time</strong>
+          <p>Click a tracked coin below for full history and rank movement.</p>
+        </div>
+      </section>
+
+      <section className="home-grid">
+        <section className="panel home-tracked-section">
+          <div className="panel-title home-tracked-section-head">
+            <div className="home-tracked-section-head-inner">
+              <div className="home-tracked-section-title-row">
+                <span>Tracked coins</span>
+                <small className="home-card-tag">live · full data</small>
+              </div>
+              <p className="home-tracked-section-lead">
+                Click any coin to open its full dashboard — history, ranks, and
+                live refresh.
+              </p>
+            </div>
+          </div>
+          <div className="home-tracked-list">
+            {showSkeletons ? (
+              <TrackedCoinCardSkeleton />
+            ) : trackedCoins.length > 0 ? (
+              trackedCoins.map((coin) => (
+                <TrackedCoinCard
+                  key={coin.mint}
+                  coin={coin}
+                  loading={trackedLoading}
+                  onOpen={onOpenTracked}
+                />
+              ))
+            ) : (
+              <p className="home-tracked-empty">No tracked coins configured yet.</p>
+            )}
+          </div>
+        </section>
+
+        <section className="panel home-search-card">
+          <div className="panel-title">
+            <span>Search any coin</span>
+            <small className="home-card-tag home-card-tag-muted">lite scan</small>
+          </div>
+          <div className="home-search-body">
+            <p className="home-search-copy">
+              Look up any Solana token mint for a live holder snapshot — top
+              wallets, distribution, and on-chain hold times.
+            </p>
+            <button
+              type="button"
+              className="home-search-demo"
+              onClick={onFocusSearch}
+            >
+              <span className="home-search-demo-label">Search tokens</span>
+              <span className="home-search-demo-placeholder">Paste mint address…</span>
+            </button>
+            <ul className="home-feature-list">
+              <li>Top 500 hodlers with pool labels</li>
+              <li>Supply brackets and average ages</li>
+              <li>Cached results refresh about hourly</li>
+            </ul>
+          </div>
+        </section>
+      </section>
+    </section>
+  );
+}
+
+function ProAccessPage({
+  apiAccess,
+  apiKeyValue,
+  onApiKeyChange,
+  onSave,
+  onClear,
+  saved,
+}: {
+  apiAccess: ApiAccessMeta | null;
+  apiKeyValue: string;
+  onApiKeyChange: (value: string) => void;
+  onSave: (event: FormEvent<HTMLFormElement>) => void;
+  onClear: () => void;
+  saved: boolean;
+}) {
+  const tier = apiAccess?.tier || 'free';
+  const limits = apiAccess?.limits || {
+    coldScanLimit: 8,
+    warmReadLimit: 120,
+  };
+
+  return (
+    <section className="pro-page-shell">
+      <div
+        className={
+          PRO_COMING_SOON
+            ? 'pro-page-content pro-page-content-locked'
+            : 'pro-page-content'
+        }
+        aria-hidden={PRO_COMING_SOON}
       >
-        {value}
-        {valueIcon}
-      </strong>
+        <section className="pro-page">
+      <section className="pro-hero panel">
+        <span className="kicker">Hodlscan Pro</span>
+        <h1>Search more coins. See full history.</h1>
+        <p className="pro-hero-copy">
+          Free access covers live holder scans with hourly refresh. Pro unlocks
+          hodler count history on searched coins and higher scan limits.
+        </p>
+        <div
+          className={
+            tier === 'pro'
+              ? 'pro-tier-badge pro-tier-badge-active'
+              : 'pro-tier-badge'
+          }
+        >
+          {tier === 'pro' ? 'Pro active on this browser' : 'Free tier active'}
+        </div>
+      </section>
+
+      <section className="pro-grid">
+        <section className="panel pro-plan-card">
+          <div className="panel-title">
+            <span>Free</span>
+          </div>
+          <ul className="pro-feature-list">
+            <li>Search any Solana token mint</li>
+            <li>Top hodlers, supply distribution, hold times</li>
+            <li>Coin data cached and refreshed about hourly</li>
+            <li>Hodler count history on the tracked coin only</li>
+          </ul>
+          <div className="pro-limit-grid">
+            <div>
+              <small>new coin scans / hour</small>
+              <strong>8</strong>
+            </div>
+            <div>
+              <small>cached reads / hour</small>
+              <strong>120</strong>
+            </div>
+          </div>
+        </section>
+
+        <section className="panel pro-plan-card pro-plan-card-featured">
+          <div className="panel-title">
+            <span>Pro</span>
+            <small className="pro-plan-tag">recommended</small>
+          </div>
+          <ul className="pro-feature-list">
+            <li>Everything in Free</li>
+            <li>Hodler count history on searched coins</li>
+            <li>Higher scan and read limits</li>
+            <li>API key works across devices once saved</li>
+          </ul>
+          <div className="pro-limit-grid">
+            <div>
+              <small>new coin scans / hour</small>
+              <strong>60</strong>
+            </div>
+            <div>
+              <small>cached reads / hour</small>
+              <strong>2,000</strong>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section className="panel pro-key-panel">
+        <div className="panel-title">
+          <span>Activate Pro</span>
+          {saved ? <small className="pro-save-note">saved</small> : null}
+        </div>
+        <p className="pro-key-copy">
+          Paste your Pro API key below. It stays in this browser and is sent with
+          API requests as <code>x-hodlscan-api-key</code>.
+        </p>
+        <form className="pro-key-form" onSubmit={onSave}>
+          <label htmlFor="pro-api-key" className="sr-only">
+            Pro API key
+          </label>
+          <input
+            id="pro-api-key"
+            type="password"
+            placeholder="hs_pro_..."
+            autoComplete="off"
+            value={apiKeyValue}
+            onChange={(event) => onApiKeyChange(event.target.value)}
+          />
+          <button type="submit">Save key</button>
+          <button type="button" className="pro-key-clear" onClick={onClear}>
+            Clear
+          </button>
+        </form>
+        {tier === 'pro' && apiAccess?.rateLimit ? (
+          <div className="pro-current-limits">
+            <div>
+              <small>cold scans left this hour</small>
+              <strong>{apiAccess.rateLimit.coldScansRemaining}</strong>
+            </div>
+            <div>
+              <small>cached reads left this hour</small>
+              <strong>{apiAccess.rateLimit.warmReadsRemaining}</strong>
+            </div>
+          </div>
+        ) : (
+          <p className="pro-key-footnote">
+            Current limits: {limits.coldScanLimit} new coin scans and{' '}
+            {limits.warmReadLimit} cached reads per hour.
+          </p>
+        )}
+      </section>
+        </section>
+      </div>
+      {PRO_COMING_SOON ? (
+        <div className="pro-page-overlay panel">
+          <span className="kicker">Hodlscan Pro</span>
+          <h2>Coming soon</h2>
+          <p className="pro-overlay-copy">
+            Hodler count history on searched coins, higher scan limits, and Pro
+            API access are on the way.
+          </p>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -572,12 +1186,22 @@ function HolderTimeline({
   nowMs,
   chartTimeFilter,
   onChartTimeFilterChange,
+  isLiteMode,
+  dataLoading,
+  historyLocked,
+  chartPreviewSeed,
+  onNavigateToPro,
 }: {
   history: HistoryPoint[];
   priceHistory: PricePoint[];
   nowMs: number;
   chartTimeFilter: ChartTimeFilterId;
   onChartTimeFilterChange: (filter: ChartTimeFilterId) => void;
+  isLiteMode: boolean;
+  dataLoading: boolean;
+  historyLocked: boolean;
+  chartPreviewSeed: number;
+  onNavigateToPro: () => void;
 }) {
   const plottedHistory = history.filter((point) => point.holder_count > 0);
   const activeChartFilter =
@@ -713,8 +1337,19 @@ function HolderTimeline({
         </div>
       </div>
       <div className="histogram">
-        {plottedHistory.length === 0 ? (
-          <div className="empty-state">waiting for hodler count data</div>
+        {dataLoading ? (
+          <ChartSkeleton />
+        ) : isLiteMode && historyLocked && plottedHistory.length === 0 ? (
+          <LockedLiteChart
+            seed={chartPreviewSeed}
+            onNavigateToPro={onNavigateToPro}
+          />
+        ) : plottedHistory.length === 0 ? (
+          <div className="empty-state">
+            {isLiteMode
+              ? 'no hodler count history for this coin yet'
+              : 'waiting for hodler count data'}
+          </div>
         ) : (
           <div
             className={
@@ -833,7 +1468,7 @@ function App() {
   const [holderData, setHolderData] = useState<HolderResponse | null>(null);
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [priceHistory, setPriceHistory] = useState<PricePoint[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [dataLoading, setDataLoading] = useState(true);
   const [lastSyncAtMs, setLastSyncAtMs] = useState(Date.now());
   const [nowMs, setNowMs] = useState(Date.now());
   const [holderTimeFilter, setHolderTimeFilter] =
@@ -849,6 +1484,7 @@ function App() {
   const [copiedWallet, setCopiedWallet] = useState(false);
   const [routeMint, setRouteMint] = useState(() => getRouteMint());
   const [routeWallet, setRouteWallet] = useState(() => getRouteWallet());
+  const [routePro, setRoutePro] = useState(() => getRoutePro());
   const [walletPortfolio, setWalletPortfolio] =
     useState<WalletPortfolio | null>(null);
   const [walletPortfolioLoading, setWalletPortfolioLoading] = useState(false);
@@ -857,75 +1493,208 @@ function App() {
   );
   const [searchValue, setSearchValue] = useState(() => getRouteMint() || '');
   const [error, setError] = useState<string | null>(null);
+  const [apiAccess, setApiAccess] = useState<ApiAccessMeta | null>(null);
+  const [historyLocked, setHistoryLocked] = useState(false);
+  const [apiKeyValue, setApiKeyValue] = useState(() => readStoredApiKey());
+  const [apiKeySaved, setApiKeySaved] = useState(false);
+  const [accessReloadNonce, setAccessReloadNonce] = useState(0);
+  const [siteToken, setSiteToken] = useState<TokenInfo | null>(null);
+  const [trackedCoins, setTrackedCoins] = useState<TrackedCoinPreview[]>([]);
+  const [trackedLoading, setTrackedLoading] = useState(false);
   const refreshingRef = useRef(false);
-  const loadingRef = useRef(true);
-
-  async function load() {
-    const [tokenResponse, holdersResponse, historyResponse, priceResponse] =
-      await Promise.all([
-        fetchJson<TokenInfo>('/api/token'),
-        fetchJson<HolderResponse>('/api/holders'),
-        fetchJson<{ history: HistoryPoint[] }>('/api/history'),
-        fetchJson<{ points: PricePoint[] }>('/api/price-history').catch(() => ({
-          points: [],
-        })),
-      ]);
-    setToken(tokenResponse);
-    setHolderData(holdersResponse);
-    setHistory(historyResponse.history);
-    setPriceHistory(priceResponse.points);
-    setLastSyncAtMs(Date.now());
-  }
+  const dataLoadingRef = useRef(true);
 
   useEffect(() => {
-    load()
-      .catch((loadError) =>
-        setError(loadError instanceof Error ? loadError.message : String(loadError)),
-      )
-      .finally(() => setLoading(false));
+    if (routeWallet || routePro || !routeMint) {
+      return;
+    }
+
+    let cancelled = false;
+    const routeTarget = routeMint;
+
+    async function loadDashboard() {
+      setError(null);
+      setDataLoading(true);
+      setHolderData(null);
+      setHistory([]);
+      setPriceHistory([]);
+      setHolderPage(1);
+
+      try {
+        if (routeTarget !== TRACKED_ROUTE) {
+          setToken((current) =>
+            current?.mint === routeTarget
+              ? current
+              : buildPlaceholderToken(routeTarget, current?.trackedMint),
+          );
+        }
+
+        const tokenResponse =
+          routeTarget === TRACKED_ROUTE
+            ? await fetchJson<TokenInfo>('/api/token')
+            : await fetchJson<TokenInfo>(`/api/token${mintQuery(routeTarget)}`);
+        if (cancelled) {
+          return;
+        }
+
+        const resolvedMint = tokenResponse.mint;
+        setToken(tokenResponse);
+        setApiAccess(tokenResponse.access || null);
+
+        const query = mintQuery(resolvedMint);
+        const [holdersResponse, historyResponse, priceResponse] =
+          await Promise.all([
+            fetchJson<HolderResponse>(`/api/holders${query}`),
+            fetchJson<{ history: HistoryPoint[]; historyLocked?: boolean; access?: ApiAccessMeta }>(
+              `/api/history${query}`,
+            ),
+            fetchJson<{ points: PricePoint[] }>(`/api/price-history${query}`).catch(
+              () => ({ points: [] }),
+            ),
+          ]);
+        if (cancelled) {
+          return;
+        }
+        setHolderData(holdersResponse);
+        setHistory(historyResponse.history);
+        setHistoryLocked(Boolean(historyResponse.historyLocked));
+        setApiAccess(
+          holdersResponse.access ||
+            historyResponse.access ||
+            tokenResponse.access ||
+            null,
+        );
+        setPriceHistory(priceResponse.points);
+        setLastSyncAtMs(Date.now());
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(
+            loadError instanceof Error ? loadError.message : String(loadError),
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setDataLoading(false);
+        }
+      }
+    }
+
+    void loadDashboard();
+    return () => {
+      cancelled = true;
+    };
+  }, [routeMint, routeWallet, routePro, accessReloadNonce]);
+
+  useEffect(() => {
+    if (!routePro) {
+      return;
+    }
+
+    let cancelled = false;
+    fetchJson<TokenInfo>('/api/token')
+      .then((response) => {
+        if (!cancelled) {
+          setApiAccess(response.access || null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setApiAccess(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [routePro, accessReloadNonce]);
+
+  useEffect(() => {
+    fetchJson<TokenInfo>('/api/token')
+      .then((response) => setSiteToken(response))
+      .catch(() => setSiteToken(null));
   }, []);
 
   useEffect(() => {
-    loadingRef.current = loading;
-  }, [loading]);
+    const onHome = !routeMint && !routeWallet && !routePro;
+    if (!onHome) {
+      return;
+    }
+
+    let cancelled = false;
+    setTrackedLoading(true);
+    fetchJson<{ coins: TrackedCoinPreview[] }>('/api/tracked')
+      .then((response) => {
+        if (!cancelled) {
+          setTrackedCoins(response.coins);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTrackedCoins([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setTrackedLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [routeMint, routeWallet, routePro]);
+
+  useEffect(() => {
+    dataLoadingRef.current = dataLoading;
+  }, [dataLoading]);
 
   useEffect(() => {
     function handlePopState() {
       setRouteMint(getRouteMint());
       setRouteWallet(getRouteWallet());
+      setRoutePro(getRoutePro());
     }
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  useEffect(() => {
-    if (!token || routeMint || routeWallet) {
-      return;
-    }
-
-    window.history.replaceState(null, '', `/coin/${encodeURIComponent(token.mint)}`);
-    setRouteMint(token.mint);
-  }, [routeMint, routeWallet, token]);
-
   async function syncCachedData({ silent = false }: { silent?: boolean } = {}) {
-    if (refreshingRef.current || loadingRef.current) {
+    if (refreshingRef.current || dataLoadingRef.current || routeWallet || !routeMint) {
       return;
     }
 
     refreshingRef.current = true;
+    const activeMint =
+      routeMint === TRACKED_ROUTE
+        ? token?.mint || siteToken?.trackedMint || null
+        : routeMint || token?.mint || null;
+
+    if (!activeMint) {
+      refreshingRef.current = false;
+      return;
+    }
 
     try {
+      const query = mintQuery(activeMint);
       const [holdersResponse, historyResponse, priceResponse] =
         await Promise.all([
-          fetchJson<HolderResponse>('/api/holders'),
-          fetchJson<{ history: HistoryPoint[] }>('/api/history'),
-          fetchJson<{ points: PricePoint[] }>('/api/price-history').catch(
+          fetchJson<HolderResponse>(`/api/holders${query}`),
+          fetchJson<{ history: HistoryPoint[]; historyLocked?: boolean; access?: ApiAccessMeta }>(
+            `/api/history${query}`,
+          ),
+          fetchJson<{ points: PricePoint[] }>(`/api/price-history${query}`).catch(
             () => ({ points: [] }),
           ),
         ]);
       setHolderData(holdersResponse);
       setHistory(historyResponse.history);
+      setHistoryLocked(Boolean(historyResponse.historyLocked));
+      setApiAccess(
+        holdersResponse.access ||
+          historyResponse.access ||
+          null,
+      );
       setPriceHistory(priceResponse.points);
       setLastSyncAtMs(Date.now());
     } catch (syncError) {
@@ -941,8 +1710,22 @@ function App() {
     }
   }
 
-  const showingMissingToken = Boolean(routeMint && token && routeMint !== token.mint);
+  const isLiteMode =
+    holderData?.tracking === 'lite' || token?.tracking === 'lite';
+  const showingHomePage = !routeMint && !routeWallet && !routePro;
   const showingWalletProfile = Boolean(routeWallet);
+  const showingProPage = routePro;
+  const chartPreviewSeed = useMemo(() => {
+    const mint =
+      routeMint === TRACKED_ROUTE
+        ? token?.mint || siteToken?.trackedMint || 'preview'
+        : routeMint || token?.mint || 'preview';
+    let hash = 0;
+    for (let index = 0; index < mint.length; index += 1) {
+      hash = (hash * 31 + mint.charCodeAt(index)) | 0;
+    }
+    return Math.abs(hash) || 1;
+  }, [routeMint, token?.mint, siteToken?.trackedMint]);
 
   useEffect(() => {
     if (!routeWallet) {
@@ -984,7 +1767,7 @@ function App() {
   }, [routeWallet]);
 
   useEffect(() => {
-    if (showingMissingToken || showingWalletProfile) {
+    if (showingWalletProfile || isLiteMode) {
       return undefined;
     }
 
@@ -1000,7 +1783,7 @@ function App() {
       window.clearInterval(clock);
       window.clearInterval(syncTimer);
     };
-  }, [lastSyncAtMs, showingMissingToken, showingWalletProfile]);
+  }, [lastSyncAtMs, isLiteMode, showingWalletProfile]);
 
   const snapshot = holderData?.snapshot;
   const metrics = holderData?.metrics;
@@ -1131,6 +1914,16 @@ function App() {
   );
   const latestPriceUsd = priceHistory.at(-1)?.close ?? null;
 
+  function beginMintNavigation(mint: string) {
+    setToken(buildPlaceholderToken(mint, token?.trackedMint));
+    setDataLoading(true);
+    setHolderData(null);
+    setHistory([]);
+    setPriceHistory([]);
+    setHolderPage(1);
+    setError(null);
+  }
+
   function handleSearchSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextSearch = searchValue.trim();
@@ -1138,11 +1931,33 @@ function App() {
       return;
     }
 
+    beginMintNavigation(nextSearch);
+    setRoutePro(false);
     window.history.pushState(null, '', `/coin/${encodeURIComponent(nextSearch)}`);
     setRouteMint(nextSearch);
   }
 
+  function navigateHome() {
+    window.history.pushState(null, '', '/');
+    setRouteMint(null);
+    setRouteWallet(null);
+    setRoutePro(false);
+    setSearchValue('');
+    setError(null);
+  }
+
+  function navigateToTracked() {
+    window.history.pushState(null, '', '/tracked');
+    setRouteMint(TRACKED_ROUTE);
+    setRouteWallet(null);
+    setRoutePro(false);
+    setSearchValue('');
+    setError(null);
+  }
+
   function navigateToMint(mint: string) {
+    beginMintNavigation(mint);
+    setRoutePro(false);
     window.history.pushState(null, '', `/coin/${encodeURIComponent(mint)}`);
     setRouteMint(mint);
     setRouteWallet(null);
@@ -1153,13 +1968,57 @@ function App() {
     window.history.pushState(null, '', `/wallet/${encodeURIComponent(address)}`);
     setRouteWallet(address);
     setRouteMint(null);
+    setRoutePro(false);
     setSearchValue('');
   }
 
-  function handleBrandClick() {
-    if (token) {
-      navigateToMint(token.mint);
+  function navigateToPro() {
+    window.history.pushState(null, '', '/pro');
+    setRoutePro(true);
+    setRouteWallet(null);
+    setRouteMint(null);
+    setSearchValue('');
+    setError(null);
+  }
+
+  function handleSaveApiKey(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = apiKeyValue.trim();
+    try {
+      if (trimmed) {
+        localStorage.setItem(API_KEY_STORAGE, trimmed);
+      } else {
+        localStorage.removeItem(API_KEY_STORAGE);
+      }
+    } catch {
+      // Ignore storage failures.
     }
+
+    setApiKeySaved(true);
+    window.setTimeout(() => setApiKeySaved(false), 1800);
+    setAccessReloadNonce((value) => value + 1);
+  }
+
+  function handleClearApiKey() {
+    setApiKeyValue('');
+    try {
+      localStorage.removeItem(API_KEY_STORAGE);
+    } catch {
+      // Ignore storage failures.
+    }
+    setApiKeySaved(true);
+    window.setTimeout(() => setApiKeySaved(false), 1800);
+    setAccessReloadNonce((value) => value + 1);
+  }
+
+  function focusSearchBar() {
+    const input = document.getElementById('token-search');
+    input?.focus();
+    input?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function handleBrandClick() {
+    navigateHome();
   }
 
   function toggleHolderSort(key: HolderSortKey) {
@@ -1205,23 +2064,71 @@ function App() {
             <span className="app-brand-word">HODL</span>
             <span className="app-brand-word app-brand-word-accent">SCAN</span>
           </button>
+          <div className="app-nav-links">
+            <button
+              type="button"
+              className={
+                showingHomePage
+                  ? 'app-nav-link app-nav-link-active'
+                  : 'app-nav-link'
+              }
+              onClick={navigateHome}
+            >
+              Home
+            </button>
+            <button
+              type="button"
+              className={
+                showingProPage
+                  ? 'app-nav-link app-nav-link-active'
+                  : 'app-nav-link'
+              }
+              onClick={navigateToPro}
+            >
+              Pro access
+            </button>
+          </div>
           <form className="token-search" role="search" onSubmit={handleSearchSubmit}>
             <label htmlFor="token-search" className="sr-only">
               Search tokens
             </label>
-            <input
-              id="token-search"
-              type="search"
-              placeholder="Search tokens"
-              autoComplete="off"
-              value={searchValue}
-              onChange={(event) => setSearchValue(event.target.value)}
-            />
+            <div className="token-search-field">
+              <span className="token-search-icon" aria-hidden="true">
+                <svg viewBox="0 0 20 20" fill="none">
+                  <circle cx="8.75" cy="8.75" r="5.5" stroke="currentColor" strokeWidth="1.6" />
+                  <path
+                    d="M13 13L17 17"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </span>
+              <input
+                id="token-search"
+                type="search"
+                placeholder="Paste a Solana mint address"
+                autoComplete="off"
+                value={searchValue}
+                onChange={(event) => setSearchValue(event.target.value)}
+              />
+              <kbd className="token-search-hint" aria-hidden="true">
+                enter
+              </kbd>
+            </div>
           </form>
-          <span className="nav-spacer" aria-hidden="true" />
         </div>
       </nav>
-      {showingWalletProfile ? (
+      {showingProPage ? (
+        <ProAccessPage
+          apiAccess={apiAccess}
+          apiKeyValue={apiKeyValue}
+          onApiKeyChange={setApiKeyValue}
+          onSave={handleSaveApiKey}
+          onClear={handleClearApiKey}
+          saved={apiKeySaved}
+        />
+      ) : showingWalletProfile ? (
         <section className="wallet-profile-page">
           <section className="wallet-profile-card panel">
             <div className="wallet-profile-identity">
@@ -1406,70 +2313,42 @@ function App() {
             )}
           </section>
         </section>
-      ) : showingMissingToken ? (
-        <section className="missing-token-page">
-          <div className="missing-token-stack">
-            <div className="missing-token-card panel">
-              We dont have data for this coin yet.
-            </div>
-            <section className="available-coins panel" aria-label="Coins with data">
-              <div className="available-coins-title">coins we have data for</div>
-              <button
-                className="available-coin"
-                type="button"
-                onClick={() => {
-                  if (token) {
-                    navigateToMint(token.mint);
-                  }
-                }}
-              >
-                <span className="available-coin-main">
-                  <span className="available-coin-image">
-                    {token?.metadata.image ? (
-                      <img
-                        src={token.metadata.image}
-                        alt={token.metadata.name || token.metadata.symbol || token.mint}
-                      />
-                    ) : (
-                      <span>{token?.metadata.symbol?.slice(0, 3) || 'HODL'}</span>
-                    )}
-                  </span>
-                  <span>
-                    <span className="available-coin-symbol">
-                      {token?.metadata.symbol || 'HODL'}
-                    </span>
-                    <span className="available-coin-name">
-                      {token?.metadata.name || 'HODL'}
-                    </span>
-                    <span className="available-coin-mint">
-                      {token ? shortAddress(token.mint) : 'loading'}
-                    </span>
-                  </span>
-                </span>
-                <span className="available-coin-stats">
-                  <span>
-                    <small>hodlers</small>
-                    <strong>{metrics ? wholeNumberFormatter.format(metrics.holderCount) : '0'}</strong>
-                  </span>
-                  <span>
-                    <small>supply</small>
-                    <strong>{formatCompact(supply)}</strong>
-                  </span>
-                  <span>
-                    <small>diamond</small>
-                    <strong>{formatNumber(diamondHandsPct)}%</strong>
-                  </span>
-                  <span>
-                    <small>avg age</small>
-                    <strong>{formatAge(metrics?.averageHolderAgeDays || 0)}</strong>
-                  </span>
-                </span>
-              </button>
-            </section>
-          </div>
-        </section>
+      ) : showingHomePage ? (
+        <HomePage
+          trackedCoins={trackedCoins}
+          trackedLoading={trackedLoading}
+          onOpenTracked={navigateToMint}
+          onFocusSearch={focusSearchBar}
+        />
       ) : (
         <>
+      {isLiteMode ? (
+        <div className="lite-mode-banner panel">
+          <span>
+            live scan with on-chain hold times — coin data refreshes about hourly
+            {apiAccess?.cache
+              ? ` · scanned ${formatRelativeScanTime(apiAccess.cache.scannedAt, nowMs)}`
+              : holderData?.access?.cache
+              ? ` · scanned ${formatRelativeScanTime(holderData.access.cache.scannedAt, nowMs)}`
+              : null}
+          </span>
+          {apiAccess?.tier !== 'pro' ? (
+            PRO_COMING_SOON ? (
+              <span className="lite-mode-banner-note">
+                Pro coming soon — hodler count history on searched coins.
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="lite-mode-banner-link"
+                onClick={navigateToPro}
+              >
+                Pro unlocks hodler count history on searched coins.
+              </button>
+            )
+          ) : null}
+        </div>
+      ) : null}
       <header className="command-bar panel">
         <div className="token-identity">
           <div className="token-image-frame">
@@ -1479,12 +2358,14 @@ function App() {
                 alt={token.metadata.name || token.metadata.symbol || token.mint}
               />
             ) : (
-              <span>{token?.metadata.symbol?.slice(0, 3) || 'HODL'}</span>
+              <span>{token?.metadata.symbol?.slice(0, 3) || shortAddress(token?.mint || '').slice(0, 3)}</span>
             )}
           </div>
           <div>
             <h1>
-              {token?.metadata.name || token?.metadata.symbol || 'Loading mint'}
+              {token?.metadata.name ||
+                token?.metadata.symbol ||
+                (token?.mint ? shortAddress(token.mint) : 'Loading mint')}
               {token?.metadata.symbol ? (
                 <span className="token-title-ticker">
                   {' '}
@@ -1536,7 +2417,7 @@ function App() {
           </div>
         </div>
         <div className="command-bar-side">
-          {token ? (
+          {token && !dataLoading ? (
             <CoinShareActions
               symbol={token.metadata.symbol || 'HODL'}
               holders={metrics?.holderCount ?? null}
@@ -1550,10 +2431,12 @@ function App() {
           <section className="top-stats-grid">
           <StatCard
             label="Total hodlers"
+            skeleton={dataLoading}
             value={metrics ? wholeNumberFormatter.format(metrics.holderCount) : '0'}
           />
           <StatCard
             label="Diamond hands"
+            skeleton={dataLoading}
             value={`${formatNumber(diamondHandsPct)}%`}
             valueIcon={
               <img
@@ -1572,6 +2455,7 @@ function App() {
           />
           <StatCard
             label="Avg hodler time"
+            skeleton={dataLoading}
             value={formatAge(metrics?.averageHolderAgeDays || 0)}
             valueStyle={ageGradientStyle(
               metrics?.averageHolderAgeDays,
@@ -1582,6 +2466,7 @@ function App() {
           />
           <StatCard
             label="Oldest hodler"
+            skeleton={dataLoading}
             value={formatAge(oldestCurrentAgeDays)}
             valueStyle={ageGradientStyle(
               oldestCurrentAgeDays,
@@ -1602,13 +2487,20 @@ function App() {
           nowMs={nowMs}
           chartTimeFilter={chartTimeFilter}
           onChartTimeFilterChange={setChartTimeFilter}
+          isLiteMode={isLiteMode}
+          dataLoading={dataLoading}
+          historyLocked={historyLocked}
+          chartPreviewSeed={chartPreviewSeed}
+          onNavigateToPro={navigateToPro}
         />
         <section className="panel distribution-panel">
           <div className="panel-title">
             <span>Distribution</span>
           </div>
           <div className="distribution-list">
-            {holderData?.distribution.length ? (
+            {dataLoading ? (
+              <DistributionSkeleton />
+            ) : holderData?.distribution.length ? (
               <>
                 <div className="distribution-row distribution-head">
                   <span>Bracket</span>
@@ -1694,7 +2586,9 @@ function App() {
               {sortIndicator(holderSort.key, 'holding', holderSort.direction)}
             </button>
           </div>
-          {paginatedHolders.length ? (
+          {dataLoading ? (
+            <DashboardSkeletonRows count={10} />
+          ) : paginatedHolders.length ? (
             paginatedHolders.map((holder) => {
               const rankChange = formatRankChange(holder, hasRankBaseline);
 
@@ -1759,14 +2653,21 @@ function App() {
                 <span>{formatNumber(holder.pct_supply)}%</span>
                 <span
                   className={isExcludedHolder(holder) ? 'muted-value' : 'age-value'}
-                  style={ageGradientStyle(
-                    holder.current_holder_age_days,
-                    visibleAges.min,
-                    visibleAges.max,
-                  )}
+                  style={
+                    isExcludedHolder(holder)
+                      ? undefined
+                      : ageGradientStyle(
+                          holder.current_holder_age_days,
+                          visibleAges.min,
+                          visibleAges.max,
+                        )
+                  }
                 >
-                  {isExcludedHolder(holder) ? 'pool' : formatAge(holder.current_holder_age_days)}
-                  {!isExcludedHolder(holder) && isDiamondHands(holder.current_holder_age_days) ? (
+                  {isExcludedHolder(holder)
+                    ? 'pool'
+                    : formatAge(holder.current_holder_age_days)}
+                  {!isExcludedHolder(holder) &&
+                  isDiamondHands(holder.current_holder_age_days) ? (
                     <img
                       className="diamond-hands-badge"
                       src={DIAMOND_HANDS_IMAGE}
@@ -1785,7 +2686,7 @@ function App() {
             <div className="empty-state table-empty">
               {holderData?.holders.length
                 ? 'no hodlers match this time filter.'
-                : 'no hodlers cached yet. run refresh to scan the configured mint.'}
+                : 'no hodlers found for this mint.'}
             </div>
           )}
         </div>

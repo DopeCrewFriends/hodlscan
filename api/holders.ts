@@ -1,15 +1,14 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { getHoldersResponse, serializeError } from '../server/handlers.js';
+import { getHoldersResponse } from '../server/handlers.js';
+import { apiHeaders, handleApiResponse } from './_utils.js';
 
 export default async function handler(
-  _req: VercelRequest,
+  req: VercelRequest,
   res: VercelResponse,
 ) {
-  try {
-    res.status(200).json(await getHoldersResponse());
-  } catch (error) {
-    const serialized = serializeError(error);
-    res.status(serialized.status).json(serialized.body);
-  }
+  await handleApiResponse(res, async () => {
+    const mint = typeof req.query.mint === 'string' ? req.query.mint : undefined;
+    return getHoldersResponse(mint, apiHeaders(req));
+  });
 }

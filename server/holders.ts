@@ -14,6 +14,23 @@ interface ProgramAccountsResult {
   }>;
 }
 
+interface ProgramAccountsV2Account {
+  pubkey: string;
+  account: {
+    data: [string, string] | string;
+  };
+}
+
+interface ProgramAccountsV2Result {
+  context?: { slot: number };
+  value?: {
+    accounts: ProgramAccountsV2Account[];
+    paginationKey: string | null;
+  };
+  accounts?: ProgramAccountsV2Account[];
+  paginationKey?: string | null;
+}
+
 interface TokenSupplyResult {
   context: { slot: number };
   value: {
@@ -78,7 +95,95 @@ function parseTokenAccount(tokenAccount: string, data: Buffer): TokenAccountHold
   };
 }
 
+function programFilters(programId: string, mint: string) {
+  return programId === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+    ? [{ dataSize: 165 }, { memcmp: { offset: 0, bytes: mint } }]
+    : [{ memcmp: { offset: 0, bytes: mint } }];
+}
+
+function unwrapProgramAccountsV2(data: ProgramAccountsV2Result) {
+  if (data.value?.accounts) {
+    return {
+      accounts: data.value.accounts,
+      paginationKey: data.value.paginationKey ?? null,
+      slot: data.context?.slot ?? null,
+    };
+  }
+
+  return {
+    accounts: data.accounts || [],
+    paginationKey: data.paginationKey ?? null,
+    slot: data.context?.slot ?? null,
+  };
+}
+
+async function scanProgramAccountsV2(
+  endpoint: RpcEndpoint,
+  mint: string,
+): Promise<{
+  holders: TokenAccountHolder[];
+  slot: number | null;
+  source: string;
+}> {
+  const holders: TokenAccountHolder[] = [];
+  const limit = Number(process.env.GPA_V2_PAGE_LIMIT || 5000);
+  const maxPages = Number(process.env.GPA_V2_MAX_PAGES || 200);
+  let slot: number | null = null;
+  let paginationKey: string | null = null;
+
+  for (const programId of config.tokenPrograms) {
+    paginationKey = null;
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const response = await callRpcOnEndpoint<ProgramAccountsV2Result>(
+        endpoint,
+        'getProgramAccountsV2',
+        [
+          programId,
+          {
+            encoding: 'base64',
+            withContext: page === 0,
+            filters: programFilters(programId, mint),
+            limit,
+            ...(paginationKey ? { paginationKey } : {}),
+          },
+        ],
+      );
+
+      const pageData = unwrapProgramAccountsV2(response.data);
+      slot = Math.max(slot || 0, pageData.slot || response.slot || 0) || null;
+
+      for (const account of pageData.accounts) {
+        const parsed = parseTokenAccount(
+          account.pubkey,
+          decodeAccountData(account.account.data),
+        );
+        if (parsed.rawAmount > 0n) {
+          holders.push(parsed);
+        }
+      }
+
+      if (pageData.accounts.length === 0 || !pageData.paginationKey) {
+        break;
+      }
+
+      paginationKey = pageData.paginationKey;
+    }
+  }
+
+  if (holders.length === 0) {
+    throw new Error(`${endpoint.name}:getProgramAccountsV2 returned no token accounts`);
+  }
+
+  return {
+    holders,
+    slot,
+    source: `${endpoint.name}:getProgramAccountsV2`,
+  };
+}
+
 async function scanDasTokenAccounts(
+  mint: string,
   totalSupply: bigint,
   decimals: number,
 ): Promise<HolderScanResult> {
@@ -90,7 +195,7 @@ async function scanDasTokenAccounts(
 
   for (let page = 1; page <= maxPages; page += 1) {
     const response = await callRpc<DasTokenAccountsResult>('getTokenAccounts', {
-      mint: config.tokenMint,
+      mint,
       page,
       limit,
     });
@@ -132,9 +237,9 @@ async function scanDasTokenAccounts(
   };
 }
 
-async function getTokenSupply() {
+async function getTokenSupply(mint: string) {
   const supply = await callRpc<TokenSupplyResult>('getTokenSupply', [
-    config.tokenMint,
+    mint,
     { commitment: 'confirmed' },
   ]);
 
@@ -146,7 +251,10 @@ async function getTokenSupply() {
   };
 }
 
-async function scanEndpoint(endpoint: RpcEndpoint): Promise<{
+async function scanEndpoint(
+  endpoint: RpcEndpoint,
+  mint: string,
+): Promise<{
   holders: TokenAccountHolder[];
   slot: number | null;
   source: string;
@@ -158,13 +266,6 @@ async function scanEndpoint(endpoint: RpcEndpoint): Promise<{
 
   for (const programId of config.tokenPrograms) {
     try {
-      const filters =
-        programId === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
-          ? [
-              { dataSize: 165 },
-              { memcmp: { offset: 0, bytes: config.tokenMint } },
-            ]
-          : [{ memcmp: { offset: 0, bytes: config.tokenMint } }];
       const response = await callRpcOnEndpoint<ProgramAccountsResult>(
         endpoint,
         'getProgramAccounts',
@@ -173,7 +274,7 @@ async function scanEndpoint(endpoint: RpcEndpoint): Promise<{
           {
             encoding: 'base64',
             withContext: true,
-            filters,
+            filters: programFilters(programId, mint),
           },
         ],
       );
@@ -214,12 +315,13 @@ async function scanEndpoint(endpoint: RpcEndpoint): Promise<{
 }
 
 async function fallbackLargestAccounts(
+  mint: string,
   totalSupply: bigint,
   decimals: number,
   previousError: string,
 ): Promise<HolderScanResult> {
   const largest = await callRpc<LargestAccountsResult>('getTokenLargestAccounts', [
-    config.tokenMint,
+    mint,
     { commitment: 'confirmed' },
   ]);
   const addresses = largest.data.value.map((account) => account.address);
@@ -262,20 +364,36 @@ async function fallbackLargestAccounts(
   };
 }
 
-export async function scanTokenHolders(): Promise<HolderScanResult> {
-  const supply = await getTokenSupply();
+export async function scanTokenHolders(mint: string): Promise<HolderScanResult> {
+  const supply = await getTokenSupply(mint);
   const endpoints = requireRpcEndpoints();
   const errors: string[] = [];
 
+  for (const endpoint of endpoints) {
+    try {
+      const result = await scanProgramAccountsV2(endpoint, mint);
+      return {
+        holders: result.holders,
+        totalSupply: supply.totalSupply,
+        decimals: supply.decimals,
+        slot: Math.max(result.slot || 0, supply.slot || 0) || null,
+        status: 'complete',
+        source: `${result.source};${supply.source}`,
+      };
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   try {
-    return await scanDasTokenAccounts(supply.totalSupply, supply.decimals);
+    return await scanDasTokenAccounts(mint, supply.totalSupply, supply.decimals);
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }
 
   for (const endpoint of endpoints) {
     try {
-      const result = await scanEndpoint(endpoint);
+      const result = await scanEndpoint(endpoint, mint);
       return {
         holders: result.holders,
         totalSupply: supply.totalSupply,
@@ -291,6 +409,7 @@ export async function scanTokenHolders(): Promise<HolderScanResult> {
   }
 
   return fallbackLargestAccounts(
+    mint,
     supply.totalSupply,
     supply.decimals,
     errors.join(' | '),

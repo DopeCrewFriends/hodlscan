@@ -344,6 +344,7 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
     scanned_at: now,
     source: input.source,
     error: input.error || null,
+    tracking: 'full' as const,
   };
 
   let snapshot: SnapshotRow;
@@ -595,12 +596,18 @@ export async function deleteHolderCountHistoryBefore(
   return data?.length ?? 0;
 }
 
-export async function getLatestSnapshot(): Promise<SnapshotRow | null> {
+export async function getLatestSnapshotForMint(
+  mint: string,
+): Promise<SnapshotRow | null> {
   if (!isSupabaseConfigured()) {
     return null;
   }
 
-  return getCurrentSnapshotForMint(config.tokenMint);
+  return getCurrentSnapshotForMint(mint);
+}
+
+export async function getLatestSnapshot(): Promise<SnapshotRow | null> {
+  return getLatestSnapshotForMint(config.tokenMint);
 }
 
 export async function getSnapshotHolders(
@@ -816,7 +823,27 @@ export async function saveWalletPortfolioCache(
   }
 }
 
-export async function getHistory(): Promise<HistoryRow[]> {
+export async function hasHolderHistory(mint: string): Promise<boolean> {
+  if (!isSupabaseConfigured()) {
+    return false;
+  }
+
+  const { count, error } = await getSupabase()
+    .from('holder_count_history')
+    .select('id', { count: 'exact', head: true })
+    .eq('mint', mint);
+
+  if (error) {
+    if (isMissingHolderCountHistoryTable(error)) {
+      return false;
+    }
+    throw new Error(error.message);
+  }
+
+  return (count || 0) > 0;
+}
+
+export async function getHistory(mint = config.tokenMint): Promise<HistoryRow[]> {
   if (!isSupabaseConfigured()) {
     return [];
   }
@@ -830,7 +857,7 @@ export async function getHistory(): Promise<HistoryRow[]> {
       getSupabase()
         .from('holder_count_history')
         .select('id, holder_count, scanned_at')
-        .eq('mint', config.tokenMint)
+        .eq('mint', mint)
         .order('scanned_at', { ascending: true })
         .range(from, to),
     );
@@ -854,3 +881,427 @@ export async function getHistory(): Promise<HistoryRow[]> {
     throw error instanceof Error ? error : new Error(message);
   }
 }
+
+interface SaveLiteSnapshotInput {
+  mint: string;
+  slot: number | null;
+  status: 'complete' | 'partial' | 'failed';
+  holderCount: number;
+  totalSupply: string;
+  decimals: number;
+  source: string;
+  holders: SnapshotHolderRow[];
+  metrics: DashboardMetrics;
+  distribution: DistributionBucket[];
+  walletClassifications?: WalletClassification[];
+  error?: string | null;
+}
+
+function isMissingAccessTable(error: { message: string }, table: string) {
+  return (
+    error.message.includes(table) &&
+    (error.message.includes('schema cache') ||
+      error.message.includes('does not exist'))
+  );
+}
+
+export async function saveLiteSnapshot(
+  input: SaveLiteSnapshotInput,
+): Promise<SnapshotRow> {
+  if (!isSupabaseConfigured()) {
+    throw new Error('Supabase is required to save lite snapshots');
+  }
+
+  const now = new Date().toISOString();
+  const existingSnapshot = await getCurrentSnapshotForMint(input.mint);
+  const snapshotPayload = {
+    mint: input.mint,
+    slot: input.slot,
+    status: input.status,
+    holder_count: input.holderCount,
+    new_holder_count: 0,
+    dropped_holder_count: 0,
+    total_supply: input.totalSupply,
+    decimals: input.decimals,
+    scanned_at: now,
+    source: input.source.startsWith('lite:') ? input.source : `lite:${input.source}`,
+    error: input.error || null,
+    tracking: 'lite' as const,
+  };
+
+  let snapshot: SnapshotRow;
+  if (existingSnapshot) {
+    const { data, error } = await getSupabase()
+      .from('snapshots')
+      .update(snapshotPayload)
+      .eq('id', existingSnapshot.id)
+      .select('*')
+      .single();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    snapshot = data as SnapshotRow;
+
+    const { error: deleteHoldersError } = await getSupabase()
+      .from('snapshot_holders')
+      .delete()
+      .eq('snapshot_id', snapshot.id);
+
+    if (deleteHoldersError) {
+      throw new Error(deleteHoldersError.message);
+    }
+  } else {
+    const { data, error } = await getSupabase()
+      .from('snapshots')
+      .insert(snapshotPayload)
+      .select('*')
+      .single();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    snapshot = data as SnapshotRow;
+  }
+
+  const snapshotId = snapshot.id;
+
+  if (input.walletClassifications?.length) {
+    for (const classificationChunk of chunk(
+      input.walletClassifications,
+      WRITE_CHUNK_SIZE,
+    )) {
+      const { error } = await getSupabase()
+        .from('wallet_classifications')
+        .upsert(classificationChunk, { onConflict: 'owner' });
+
+      if (error) {
+        throw new Error(error.message);
+      }
+    }
+  }
+
+  const snapshotHolders = input.holders
+    .slice(0, config.maxDisplayHolders)
+    .map((holder) => ({
+      snapshot_id: snapshotId,
+      owner: holder.owner,
+      token_account: holder.token_account,
+      raw_amount: holder.raw_amount,
+      ui_amount: holder.ui_amount,
+      rank: holder.rank,
+      pct_supply: holder.pct_supply,
+      historical_holding_since_at: holder.historical_holding_since_at,
+      historical_holding_source: holder.historical_holding_source,
+    }));
+
+  for (const holderChunk of chunk(snapshotHolders, WRITE_CHUNK_SIZE)) {
+    const { error } = await getSupabase()
+      .from('snapshot_holders')
+      .insert(holderChunk);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+  }
+
+  await saveSnapshotMetrics({
+    snapshotId,
+    metrics: input.metrics,
+    distribution: input.distribution,
+  });
+
+  await deleteOtherSnapshots(input.mint, snapshotId);
+  return snapshot;
+}
+
+export async function getLiteSnapshotBundle(mint: string) {
+  if (!isSupabaseConfigured()) {
+    return null;
+  }
+
+  const snapshot = await getCurrentSnapshotForMint(mint);
+  if (!snapshot || snapshot.tracking === 'full') {
+    return null;
+  }
+
+  const [holders, snapshotMetrics] = await Promise.all([
+    getSnapshotHolders(snapshot.id),
+    getSnapshotMetrics(snapshot.id),
+  ]);
+
+  return {
+    snapshot,
+    holders,
+    snapshotMetrics,
+  };
+}
+
+export async function lookupApiAccessKey(keyHash: string) {
+  if (!isSupabaseConfigured()) {
+    return null;
+  }
+
+  try {
+    const { data, error } = await getSupabase()
+      .from('api_access_keys')
+      .select('id, tier, label, revoked_at')
+      .eq('key_hash', keyHash)
+      .maybeSingle();
+
+    if (error) {
+      if (isMissingAccessTable(error, 'api_access_keys')) {
+        return null;
+      }
+      throw new Error(error.message);
+    }
+
+    if (!data || data.revoked_at) {
+      return null;
+    }
+
+    return {
+      id: data.id as string,
+      tier: data.tier as 'pro',
+      label: (data.label as string | null) || null,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isMissingAccessTable({ message }, 'api_access_keys')) {
+      return null;
+    }
+    throw error instanceof Error ? error : new Error(message);
+  }
+}
+
+const inMemoryRateLimits = new Map<
+  string,
+  { windowStart: number; count: number }
+>();
+
+function consumeInMemoryRateLimitBucket({
+  bucketKey,
+  limit,
+  windowMs,
+}: {
+  bucketKey: string;
+  limit: number;
+  windowMs: number;
+}) {
+  const now = Date.now();
+  const existing = inMemoryRateLimits.get(bucketKey);
+  if (!existing || now - existing.windowStart >= windowMs) {
+    inMemoryRateLimits.set(bucketKey, { windowStart: now, count: 1 });
+    return {
+      allowed: true,
+      remaining: Math.max(0, limit - 1),
+      resetsAt: new Date(now + windowMs),
+      retryAfterSeconds: Math.ceil(windowMs / 1000),
+    };
+  }
+
+  if (existing.count >= limit) {
+    const retryAfterSeconds = Math.ceil(
+      (existing.windowStart + windowMs - now) / 1000,
+    );
+    return {
+      allowed: false,
+      remaining: 0,
+      resetsAt: new Date(existing.windowStart + windowMs),
+      retryAfterSeconds: Math.max(retryAfterSeconds, 1),
+    };
+  }
+
+  existing.count += 1;
+  return {
+    allowed: true,
+    remaining: Math.max(0, limit - existing.count),
+    resetsAt: new Date(existing.windowStart + windowMs),
+    retryAfterSeconds: Math.max(
+      1,
+      Math.ceil((existing.windowStart + windowMs - now) / 1000),
+    ),
+  };
+}
+
+export async function consumeRateLimitBucket({
+  bucketKey,
+  limit,
+  windowMs,
+}: {
+  bucketKey: string;
+  limit: number;
+  windowMs: number;
+}) {
+  if (!isSupabaseConfigured()) {
+    return consumeInMemoryRateLimitBucket({ bucketKey, limit, windowMs });
+  }
+
+  const now = Date.now();
+
+  try {
+    const { data, error } = await getSupabase()
+      .from('api_rate_limit_buckets')
+      .select('window_start, count')
+      .eq('bucket_key', bucketKey)
+      .maybeSingle();
+
+    if (error) {
+      if (isMissingAccessTable(error, 'api_rate_limit_buckets')) {
+        return consumeInMemoryRateLimitBucket({ bucketKey, limit, windowMs });
+      }
+      throw new Error(error.message);
+    }
+
+    const windowStartMs = data
+      ? new Date(data.window_start as string).getTime()
+      : 0;
+    const currentCount = (data?.count as number | undefined) || 0;
+    const windowExpired = !data || now - windowStartMs >= windowMs;
+
+    if (windowExpired) {
+      const nextWindowStart = new Date(now).toISOString();
+      const { error: upsertError } = await getSupabase()
+        .from('api_rate_limit_buckets')
+        .upsert(
+          {
+            bucket_key: bucketKey,
+            window_start: nextWindowStart,
+            count: 1,
+          },
+          { onConflict: 'bucket_key' },
+        );
+
+      if (upsertError) {
+        throw new Error(upsertError.message);
+      }
+
+      return {
+        allowed: true,
+        remaining: Math.max(0, limit - 1),
+        resetsAt: new Date(now + windowMs),
+        retryAfterSeconds: Math.ceil(windowMs / 1000),
+      };
+    }
+
+    if (currentCount >= limit) {
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil((windowStartMs + windowMs - now) / 1000),
+      );
+      return {
+        allowed: false,
+        remaining: 0,
+        resetsAt: new Date(windowStartMs + windowMs),
+        retryAfterSeconds,
+      };
+    }
+
+    const nextCount = currentCount + 1;
+    const { error: updateError } = await getSupabase()
+      .from('api_rate_limit_buckets')
+      .update({ count: nextCount })
+      .eq('bucket_key', bucketKey);
+
+    if (updateError) {
+      throw new Error(updateError.message);
+    }
+
+    return {
+      allowed: true,
+      remaining: Math.max(0, limit - nextCount),
+      resetsAt: new Date(windowStartMs + windowMs),
+      retryAfterSeconds: Math.max(
+        1,
+        Math.ceil((windowStartMs + windowMs - now) / 1000),
+      ),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isMissingAccessTable({ message }, 'api_rate_limit_buckets')) {
+      return consumeInMemoryRateLimitBucket({ bucketKey, limit, windowMs });
+    }
+    throw error instanceof Error ? error : new Error(message);
+  }
+}
+
+const inMemoryLiteScanLocks = new Map<string, number>();
+
+export async function tryAcquireLiteScanLock(mint: string, lockMs: number) {
+  const now = Date.now();
+
+  if (!isSupabaseConfigured()) {
+    const lockedUntil = inMemoryLiteScanLocks.get(mint) || 0;
+    if (lockedUntil > now) {
+      return false;
+    }
+    inMemoryLiteScanLocks.set(mint, now + lockMs);
+    return true;
+  }
+
+  try {
+    const { data, error } = await getSupabase()
+      .from('lite_scan_locks')
+      .select('locked_at')
+      .eq('mint', mint)
+      .maybeSingle();
+
+    if (error) {
+      if (isMissingAccessTable(error, 'lite_scan_locks')) {
+        const lockedUntil = inMemoryLiteScanLocks.get(mint) || 0;
+        if (lockedUntil > now) {
+          return false;
+        }
+        inMemoryLiteScanLocks.set(mint, now + lockMs);
+        return true;
+      }
+      throw new Error(error.message);
+    }
+
+    if (data) {
+      const lockedAtMs = new Date(data.locked_at as string).getTime();
+      if (now - lockedAtMs < lockMs) {
+        return false;
+      }
+    }
+
+    const { error: upsertError } = await getSupabase()
+      .from('lite_scan_locks')
+      .upsert(
+        {
+          mint,
+          locked_at: new Date(now).toISOString(),
+        },
+        { onConflict: 'mint' },
+      );
+
+    if (upsertError) {
+      throw new Error(upsertError.message);
+    }
+
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isMissingAccessTable({ message }, 'lite_scan_locks')) {
+      inMemoryLiteScanLocks.set(mint, now + lockMs);
+      return true;
+    }
+    throw error instanceof Error ? error : new Error(message);
+  }
+}
+
+export async function releaseLiteScanLock(mint: string) {
+  inMemoryLiteScanLocks.delete(mint);
+  if (!isSupabaseConfigured()) {
+    return;
+  }
+
+  try {
+    await getSupabase().from('lite_scan_locks').delete().eq('mint', mint);
+  } catch {
+    // Best effort; lock expires on its own.
+  }
+}
+

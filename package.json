@@ -14,7 +14,8 @@
     "start": "NODE_ENV=production tsx server/index.ts",
     "smoke": "tsx server/smoke.ts",
     "import:history": "tsx server/import-history-csv.ts",
-    "import:history:dune": "tsx server/import-dune-history.ts"
+    "import:history:dune": "tsx server/import-dune-history.ts",
+    "generate:api-key": "tsx server/generate-api-key.ts"
   },
   "dependencies": {
     "@fontsource/geist-sans": "^5.2.5",

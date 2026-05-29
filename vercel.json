@@ -12,6 +12,14 @@
   },
   "rewrites": [
     {
+      "source": "/tracked",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/pro",
+      "destination": "/index.html"
+    },
+    {
       "source": "/coin/:mint",
       "destination": "/index.html"
     },

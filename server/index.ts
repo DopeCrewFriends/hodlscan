@@ -10,11 +10,16 @@ import {
   getHoldersResponse,
   getPriceHistoryResponse,
   getTokenResponse,
+  getTrackedCoinsResponse,
   getWalletPortfolioResponse,
   refreshSnapshotResponse,
   runSnapshotRefresh,
   serializeError,
 } from './handlers.js';
+import {
+  headersFromExpress,
+  serializeRateLimitError,
+} from './request-context.js';
 
 initDb();
 
@@ -22,16 +27,64 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get('/api/token', async (_req, res) => {
-  res.json(await getTokenResponse());
+app.get('/api/token', async (req, res) => {
+  try {
+    const mint =
+      typeof req.query.mint === 'string' ? req.query.mint : undefined;
+    res.json(await getTokenResponse(mint, headersFromExpress(req.headers)));
+  } catch (error) {
+    const rateLimited = serializeRateLimitError(error);
+    if (rateLimited) {
+      res.setHeader('Retry-After', String(rateLimited.retryAfterSeconds));
+      res.status(rateLimited.status).json(rateLimited.body);
+      return;
+    }
+    const serialized = serializeError(error);
+    res.status(serialized.status).json(serialized.body);
+  }
 });
 
-app.get('/api/holders', async (_req, res) => {
-  res.json(await getHoldersResponse());
+app.get('/api/tracked', async (_req, res) => {
+  try {
+    res.json(await getTrackedCoinsResponse());
+  } catch (error) {
+    const serialized = serializeError(error);
+    res.status(serialized.status).json(serialized.body);
+  }
 });
 
-app.get('/api/history', async (_req, res) => {
-  res.json(await getHistoryResponse());
+app.get('/api/holders', async (req, res) => {
+  try {
+    const mint =
+      typeof req.query.mint === 'string' ? req.query.mint : undefined;
+    res.json(await getHoldersResponse(mint, headersFromExpress(req.headers)));
+  } catch (error) {
+    const rateLimited = serializeRateLimitError(error);
+    if (rateLimited) {
+      res.setHeader('Retry-After', String(rateLimited.retryAfterSeconds));
+      res.status(rateLimited.status).json(rateLimited.body);
+      return;
+    }
+    const serialized = serializeError(error);
+    res.status(serialized.status).json(serialized.body);
+  }
+});
+
+app.get('/api/history', async (req, res) => {
+  try {
+    const mint =
+      typeof req.query.mint === 'string' ? req.query.mint : undefined;
+    res.json(await getHistoryResponse(mint, headersFromExpress(req.headers)));
+  } catch (error) {
+    const rateLimited = serializeRateLimitError(error);
+    if (rateLimited) {
+      res.setHeader('Retry-After', String(rateLimited.retryAfterSeconds));
+      res.status(rateLimited.status).json(rateLimited.body);
+      return;
+    }
+    const serialized = serializeError(error);
+    res.status(serialized.status).json(serialized.body);
+  }
 });
 
 app.get('/api/price-history', async (req, res) => {

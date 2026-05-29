@@ -10,6 +10,20 @@ const rootDir = path.resolve(__dirname, '..');
 
 dotenv.config({ path: path.join(rootDir, '.env'), quiet: true });
 
+const defaultTokenMint =
+  process.env.TOKEN_MINT || 'Hh3oTaqDCKKfdBgsQEvxp9sUwyNf8x9qmKqEMLBWpump';
+const trackedMints = [
+  ...new Set(
+    [
+      defaultTokenMint,
+      ...(process.env.TRACKED_MINTS || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ].filter(Boolean),
+  ),
+];
+
 const heliusUrl =
   process.env.HELIUS_RPC_URL ||
   (process.env.HELIUS_API_KEY
@@ -23,8 +37,8 @@ export function isSupabaseConfigured() {
 export const config = {
   rootDir,
   port: Number(process.env.PORT || 4077),
-  tokenMint:
-    process.env.TOKEN_MINT || 'Hh3oTaqDCKKfdBgsQEvxp9sUwyNf8x9qmKqEMLBWpump',
+  tokenMint: defaultTokenMint,
+  trackedMints,
   rpcTimeoutMs: Number(process.env.RPC_TIMEOUT_MS || 30_000),
   rpcRetries: Number(process.env.RPC_RETRIES || 2),
   maxDisplayHolders: Number(process.env.MAX_DISPLAY_HOLDERS || 500),
@@ -41,6 +55,20 @@ export const config = {
     process.env.NEXT_PUBLIC_SUPABASE_URL ||
     '',
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+  liteMintTtlMs: Number(process.env.LITE_MINT_TTL_MS || 60 * 60_000),
+  liteScanLockMs: Number(process.env.LITE_SCAN_LOCK_MS || 5 * 60_000),
+  freeAccessLimits: {
+    coldScanLimit: Number(process.env.FREE_COLD_SCAN_LIMIT || 8),
+    warmReadLimit: Number(process.env.FREE_WARM_READ_LIMIT || 120),
+  },
+  proAccessLimits: {
+    coldScanLimit: Number(process.env.PRO_COLD_SCAN_LIMIT || 60),
+    warmReadLimit: Number(process.env.PRO_WARM_READ_LIMIT || 2000),
+  },
+  proApiKeys: (process.env.HODLSCAN_PRO_API_KEYS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean),
   tokenPrograms: [
     'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
     'TokenzQdBNbLqP5VEvGdJJj4pRjEwRsgdtJrRKCfr',
