@@ -4,9 +4,15 @@ import '@fontsource/geist-sans/latin-600.css';
 import '@fontsource/geist-sans/latin-700.css';
 import '@fontsource/geist-sans/latin-800.css';
 
+import { Analytics } from '@vercel/analytics/react';
 import { createRoot } from 'react-dom/client';
 
 import App from './App.js';
 import './styles.css';
 
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(
+  <>
+    <App />
+    <Analytics />
+  </>,
+);

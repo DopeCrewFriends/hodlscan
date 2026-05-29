@@ -1,5 +1,6 @@
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { pageview } from '@vercel/analytics';
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || '';
 const API_KEY_STORAGE = 'hodlscan_api_key';
@@ -1503,6 +1504,7 @@ function App() {
   const [trackedLoading, setTrackedLoading] = useState(false);
   const refreshingRef = useRef(false);
   const dataLoadingRef = useRef(true);
+  const analyticsBootstrappedRef = useRef(false);
 
   useEffect(() => {
     if (routeWallet || routePro || !routeMint) {
@@ -1658,6 +1660,15 @@ function App() {
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+
+  useEffect(() => {
+    if (!analyticsBootstrappedRef.current) {
+      analyticsBootstrappedRef.current = true;
+      return;
+    }
+
+    pageview({ path: window.location.pathname });
+  }, [routeMint, routeWallet, routePro]);
 
   async function syncCachedData({ silent = false }: { silent?: boolean } = {}) {
     if (refreshingRef.current || dataLoadingRef.current || routeWallet || !routeMint) {
