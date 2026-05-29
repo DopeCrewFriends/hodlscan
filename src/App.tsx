@@ -60,7 +60,6 @@ function formatPriceUsd(value: number) {
   return `$${value.toFixed(digits)}`;
 }
 
-const dateFormatter = new Intl.DateTimeFormat(undefined);
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: 'medium',
   timeStyle: 'short',
@@ -181,7 +180,7 @@ interface HistoryPoint {
 
 type HolderTimeFilterId = (typeof holderTimeFilters)[number]['id'];
 type ChartTimeFilterId = (typeof chartTimeFilters)[number]['id'];
-type HolderSortKey = 'rank' | 'balance' | 'supply' | 'first_seen' | 'holding';
+type HolderSortKey = 'rank' | 'balance' | 'supply' | 'holding';
 type SortDirection = 'asc' | 'desc';
 
 const SOLSCAN_TOKEN_URL = 'https://solscan.io/token/';
@@ -322,10 +321,6 @@ async function copyText(value: string) {
 
 function formatDistributionLabel(label: string) {
   return label.replace(/^top\b/i, 'Top');
-}
-
-function formatDate(value: string | null | undefined) {
-  return value ? dateFormatter.format(new Date(value)) : 'n/a';
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -1079,14 +1074,6 @@ function App() {
           comparison =
             left.current_holder_age_days - right.current_holder_age_days;
           break;
-        case 'first_seen': {
-          const leftDate =
-            left.historical_holding_since_at || left.first_seen_at || '';
-          const rightDate =
-            right.historical_holding_since_at || right.first_seen_at || '';
-          comparison = leftDate.localeCompare(rightDate);
-          break;
-        }
         default:
           comparison = 0;
       }
@@ -1701,14 +1688,6 @@ function App() {
             <button
               className="table-sort-button"
               type="button"
-              onClick={() => toggleHolderSort('first_seen')}
-            >
-              First seen
-              {sortIndicator(holderSort.key, 'first_seen', holderSort.direction)}
-            </button>
-            <button
-              className="table-sort-button"
-              type="button"
               onClick={() => toggleHolderSort('holding')}
             >
               Holding
@@ -1778,13 +1757,6 @@ function App() {
                 </span>
                 <span>{formatCompact(holder.ui_amount)}</span>
                 <span>{formatNumber(holder.pct_supply)}%</span>
-                <span>
-                  {holder.historical_holding_since_at || holder.first_seen_at
-                    ? formatDate(
-                        holder.historical_holding_since_at || holder.first_seen_at,
-                      )
-                    : 'n/a'}
-                </span>
                 <span
                   className={isExcludedHolder(holder) ? 'muted-value' : 'age-value'}
                   style={ageGradientStyle(
