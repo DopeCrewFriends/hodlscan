@@ -10,6 +10,8 @@ const AMBER = '#ffcc66';
 const MUTED = '#6c7685';
 const TEXT = '#e9eef5';
 
+const DIST_LABELS = ['Top 10', 'Top 50', 'Top 100', 'Top 250', 'Top 500'];
+
 function formatDays(daysRaw: string | null) {
   const days = Number(daysRaw);
   if (!daysRaw || !Number.isFinite(days)) {
@@ -33,6 +35,22 @@ function formatPrice(priceRaw: string | null) {
   return `$${price.toFixed(digits)}`;
 }
 
+function parseDist(distRaw: string | null) {
+  if (!distRaw) {
+    return [];
+  }
+  return distRaw
+    .split(',')
+    .map((value, index) => {
+      const pct = Number(value);
+      if (value.trim() === '' || !Number.isFinite(pct) || !DIST_LABELS[index]) {
+        return null;
+      }
+      return { label: DIST_LABELS[index], pct };
+    })
+    .filter((entry): entry is { label: string; pct: number } => entry !== null);
+}
+
 export default function handler(req: Request) {
   const { searchParams } = new URL(req.url);
   const symbol = searchParams.get('symbol') || 'HODL';
@@ -41,15 +59,18 @@ export default function handler(req: Request) {
   const avgHold = formatDays(searchParams.get('avgHoldDays'));
   const oldest = formatDays(searchParams.get('oldestDays'));
   const price = formatPrice(searchParams.get('price'));
-  const topSupplyPct = searchParams.get('topSupplyPct');
+  const distribution = parseDist(searchParams.get('dist'));
+  const today = new Date().toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
 
   const stats = [
     holders ? { label: 'Total hodlers', value: holders } : null,
     diamondPct ? { label: 'Diamond hands', value: `${diamondPct}%` } : null,
     avgHold ? { label: 'Avg hodl time', value: avgHold } : null,
     oldest ? { label: 'Oldest hodler', value: oldest } : null,
-    price ? { label: 'Price', value: price } : null,
-    topSupplyPct ? { label: 'Top 10 supply', value: `${topSupplyPct}%` } : null,
   ].filter((stat): stat is { label: string; value: string } => stat !== null);
 
   return new ImageResponse(
@@ -61,7 +82,7 @@ export default function handler(req: Request) {
           display: 'flex',
           flexDirection: 'column',
           justifyContent: 'space-between',
-          padding: '64px',
+          padding: '52px 64px',
           background: `radial-gradient(circle at top left, rgba(68,240,162,0.14), transparent 55%), linear-gradient(160deg, #07090d 0%, ${BG} 100%)`,
           color: TEXT,
           fontFamily: 'sans-serif',
@@ -75,12 +96,12 @@ export default function handler(req: Request) {
           }}
         >
           <div style={{ display: 'flex', alignItems: 'baseline' }}>
-            <span style={{ fontSize: '44px', fontWeight: 800, letterSpacing: '6px' }}>
+            <span style={{ fontSize: '40px', fontWeight: 800, letterSpacing: '6px' }}>
               HODL
             </span>
             <span
               style={{
-                fontSize: '44px',
+                fontSize: '40px',
                 fontWeight: 800,
                 letterSpacing: '6px',
                 color: GREEN,
@@ -92,7 +113,7 @@ export default function handler(req: Request) {
           <div
             style={{
               display: 'flex',
-              fontSize: '26px',
+              fontSize: '24px',
               fontWeight: 700,
               letterSpacing: '2px',
               textTransform: 'uppercase',
@@ -103,61 +124,148 @@ export default function handler(req: Request) {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'baseline' }}>
-          <span
-            style={{
-              fontSize: '116px',
-              fontWeight: 800,
-              letterSpacing: '-3px',
-              color: GREEN,
-            }}
-          >
-            ${symbol}
-          </span>
-          {price ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '26px' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline' }}>
             <span
               style={{
-                display: 'flex',
-                marginLeft: '28px',
-                fontSize: '40px',
-                fontWeight: 700,
-                color: AMBER,
+                fontSize: '88px',
+                fontWeight: 800,
+                letterSpacing: '-3px',
+                color: GREEN,
               }}
             >
-              {price}
+              ${symbol}
             </span>
-          ) : null}
-        </div>
-
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px' }}>
-          {stats.map((stat) => (
-            <div
-              key={stat.label}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                flex: '1 1 0',
-                minWidth: '180px',
-                gap: '10px',
-                padding: '26px 30px',
-                background: PANEL,
-                border: `1px solid ${BORDER}`,
-                borderRadius: '18px',
-              }}
-            >
+            {price ? (
               <span
                 style={{
-                  fontSize: '20px',
+                  display: 'flex',
+                  marginLeft: '26px',
+                  fontSize: '38px',
+                  fontWeight: 700,
+                  color: AMBER,
+                }}
+              >
+                {price}
+              </span>
+            ) : null}
+          </div>
+
+          {stats.length ? (
+            <div style={{ display: 'flex', gap: '18px' }}>
+              {stats.map((stat) => (
+                <div
+                  key={stat.label}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    flex: '1 1 0',
+                    gap: '8px',
+                    padding: '20px 24px',
+                    background: PANEL,
+                    border: `1px solid ${BORDER}`,
+                    borderRadius: '18px',
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: '17px',
+                      letterSpacing: '2px',
+                      textTransform: 'uppercase',
+                      whiteSpace: 'nowrap',
+                      color: MUTED,
+                    }}
+                  >
+                    {stat.label}
+                  </span>
+                  <span style={{ fontSize: '40px', fontWeight: 800 }}>
+                    {stat.value}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {distribution.length ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <span
+                style={{
+                  display: 'flex',
+                  fontSize: '17px',
                   letterSpacing: '2px',
                   textTransform: 'uppercase',
                   color: MUTED,
                 }}
               >
-                {stat.label}
+                Supply concentration
               </span>
-              <span style={{ fontSize: '44px', fontWeight: 800 }}>{stat.value}</span>
+              {distribution.map((entry) => (
+                <div
+                  key={entry.label}
+                  style={{ display: 'flex', alignItems: 'center', gap: '18px' }}
+                >
+                  <span
+                    style={{
+                      display: 'flex',
+                      width: '92px',
+                      fontSize: '22px',
+                      fontWeight: 700,
+                    }}
+                  >
+                    {entry.label}
+                  </span>
+                  <div
+                    style={{
+                      display: 'flex',
+                      flex: '1 1 0',
+                      height: '16px',
+                      background: 'rgba(255,255,255,0.06)',
+                      borderRadius: '8px',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        width: `${Math.max(0, Math.min(100, entry.pct)).toFixed(2)}%`,
+                        height: '16px',
+                        background: `linear-gradient(90deg, #18845f, ${GREEN})`,
+                        borderRadius: '8px',
+                      }}
+                    />
+                  </div>
+                  <span
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'flex-end',
+                      width: '96px',
+                      fontSize: '22px',
+                      fontWeight: 800,
+                      color: GREEN,
+                    }}
+                  >
+                    {entry.pct.toFixed(2)}%
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
+          ) : null}
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingTop: '6px',
+            borderTop: `1px solid ${BORDER}`,
+            fontSize: '20px',
+            color: MUTED,
+          }}
+        >
+          <span style={{ display: 'flex', fontWeight: 700, letterSpacing: '1px' }}>
+            hodlscan
+          </span>
+          <span style={{ display: 'flex' }}>{today}</span>
         </div>
       </div>
     ),

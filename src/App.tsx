@@ -445,6 +445,14 @@ function StatCard({
   );
 }
 
+const DISTRIBUTION_BRACKETS = [
+  'Top 10',
+  'Top 50',
+  'Top 100',
+  'Top 250',
+  'Top 500',
+] as const;
+
 function CoinShareActions({
   symbol,
   holders,
@@ -452,7 +460,7 @@ function CoinShareActions({
   avgHoldDays,
   oldestDays,
   price,
-  topSupplyPct,
+  distribution,
 }: {
   symbol: string;
   holders: number | null;
@@ -460,7 +468,7 @@ function CoinShareActions({
   avgHoldDays: number | null;
   oldestDays: number | null;
   price: number | null;
-  topSupplyPct: number | null;
+  distribution: { label: string; pctSupply: number }[] | null;
 }) {
   const [downloading, setDownloading] = useState(false);
 
@@ -482,8 +490,14 @@ function CoinShareActions({
     if (price != null) {
       params.set('price', String(price));
     }
-    if (topSupplyPct != null) {
-      params.set('topSupplyPct', formatNumber(topSupplyPct));
+    if (distribution && distribution.length) {
+      const values = DISTRIBUTION_BRACKETS.map((label) => {
+        const bracket = distribution.find((entry) => entry.label === label);
+        return bracket ? formatNumber(bracket.pctSupply) : '';
+      });
+      if (values.some((value) => value !== '')) {
+        params.set('dist', values.join(','));
+      }
     }
     return `${apiBase}/api/flex?${params.toString()}`;
   }
@@ -1531,7 +1545,7 @@ function App() {
               avgHoldDays={metrics?.averageHolderAgeDays ?? null}
               oldestDays={oldestCurrentAgeDays}
               price={latestPriceUsd}
-              topSupplyPct={metrics?.top10Pct ?? null}
+              distribution={holderData?.distribution ?? null}
             />
           ) : null}
           <section className="top-stats-grid">
